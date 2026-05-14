@@ -35,7 +35,7 @@ Import any **public** D&D Beyond character sheet directly into your Obsidian vau
 ### Build from source
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin.git
 cd dndbeyond-importer
 npm install
 npm run build        # produces main.js
