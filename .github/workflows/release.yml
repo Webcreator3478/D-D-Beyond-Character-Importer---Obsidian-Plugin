@@ -35,24 +35,10 @@ jobs:
         with:
           subject-path: main.js
 
-      # ── Bundle release assets ───────────────────────────────────────────────
-      - name: Package release zip
-        run: |
-          mkdir -p release/dndbeyond-importer
-          cp main.js manifest.json release/dndbeyond-importer/
-          cd release
-          zip -r dndbeyond-importer.zip dndbeyond-importer/
-
-      - name: Attest release zip
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: release/dndbeyond-importer.zip
-
       # ── Create GitHub Release ───────────────────────────────────────────────
       - name: Read release notes
         id: notes
         run: |
-          # Extract the section for the current tag from RELEASE_NOTES.md
           TAG="${GITHUB_REF_NAME}"
           NOTES=$(awk "/^## ${TAG//./\\.}/{found=1; next} found && /^## /{exit} found{print}" RELEASE_NOTES.md)
           if [ -z "$NOTES" ]; then
@@ -69,4 +55,3 @@ jobs:
           files: |
             main.js
             manifest.json
-            release/dndbeyond-importer.zip
