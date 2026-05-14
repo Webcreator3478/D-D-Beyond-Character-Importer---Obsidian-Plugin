@@ -4,6 +4,7 @@ import {
 	Notice,
 	Plugin,
 	PluginSettingTab,
+	requestUrl,
 	Setting,
 	TFile,
 } from "obsidian";
@@ -14,6 +15,12 @@ interface DnDBeyondImporterSettings {
 	includeEquipment: boolean;
 	includeFeatures: boolean;
 	includeBackstory: boolean;
+}
+
+interface DiceRoll {
+	die: string;
+	result: number;
+	timestamp: string;
 }
 
 const DEFAULT_SETTINGS: DnDBeyondImporterSettings = {
@@ -534,6 +541,7 @@ function buildBackstory(char: any): string {
 
 export default class DnDBeyondImporterPlugin extends Plugin {
 	settings: DnDBeyondImporterSettings;
+	rollHistory: DiceRoll[] = [];
 
 	async onload() {
 		await this.loadSettings();
@@ -542,11 +550,23 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			new ImportModal(this.app, this).open();
 		});
 
+		this.addRibbonIcon("dice", "Dice Roller", () => {
+			new DiceRollerModal(this.app, this).open();
+		});
+
 		this.addCommand({
 			id: "import-dndbeyond-character",
 			name: "Import character from D&D Beyond",
 			callback: () => {
 				new ImportModal(this.app, this).open();
+			},
+		});
+
+		this.addCommand({
+			id: "open-dice-roller",
+			name: "Open Dice Roller",
+			callback: () => {
+				new DiceRollerModal(this.app, this).open();
 			},
 		});
 
@@ -573,11 +593,13 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 		let data: any;
 		try {
 			const apiUrl = `https://character-service.dndbeyond.com/character/v5/character/${charId}`;
-			const resp = await fetch(apiUrl, {
+			const resp = await requestUrl({
+				url: apiUrl,
 				headers: { Accept: "application/json" },
 			});
-			if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-			data = await resp.json();
+			if (resp.status < 200 || resp.status >= 300)
+				throw new Error(`HTTP ${resp.status}`);
+			data = resp.json;
 		} catch (e: any) {
 			new Notice(`❌ Failed to fetch character: ${e.message}`);
 			console.error("[DnD Beyond Importer]", e);
@@ -677,6 +699,158 @@ class ImportModal extends Modal {
 	private async submit() {
 		this.close();
 		await this.plugin.importCharacter(this.urlValue.trim());
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+// ─── Dice Roller Modal ────────────────────────────────────────────────────────
+
+class DiceRollerModal extends Modal {
+	plugin: DnDBeyondImporterPlugin;
+
+	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
+		super(app);
+		this.plugin = plugin;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl("h2", { text: "🎲 Dice Roller" });
+
+		// ── Die buttons ─────────────────────────────────────────────────────
+		const dice: { label: string; sides: number }[] = [
+			{ label: "d4", sides: 4 },
+			{ label: "d6", sides: 6 },
+			{ label: "d8", sides: 8 },
+			{ label: "d10", sides: 10 },
+			{ label: "d12", sides: 12 },
+			{ label: "d20", sides: 20 },
+			{ label: "d100", sides: 100 },
+		];
+
+		const btnGrid = contentEl.createEl("div");
+		Object.assign(btnGrid.style, {
+			display: "flex",
+			flexWrap: "wrap",
+			gap: "8px",
+			marginBottom: "16px",
+		});
+
+		// ── Result display ───────────────────────────────────────────────────
+		const resultEl = contentEl.createEl("div");
+		Object.assign(resultEl.style, {
+			textAlign: "center",
+			fontSize: "48px",
+			fontWeight: "bold",
+			margin: "12px 0",
+			minHeight: "64px",
+			letterSpacing: "2px",
+		});
+		resultEl.setText("—");
+
+		const subtitleEl = contentEl.createEl("div");
+		Object.assign(subtitleEl.style, {
+			textAlign: "center",
+			fontSize: "13px",
+			color: "var(--text-muted)",
+			marginBottom: "16px",
+		});
+
+		for (const die of dice) {
+			const btn = btnGrid.createEl("button", {
+				text: die.label,
+				cls: "mod-cta",
+			});
+			Object.assign(btn.style, {
+				flex: "1 1 calc(14% - 8px)",
+				minWidth: "52px",
+				padding: "10px 4px",
+				fontSize: "15px",
+				fontWeight: "600",
+			});
+			btn.addEventListener("click", () => {
+				const roll = Math.floor(Math.random() * die.sides) + 1;
+				const now = new Date();
+				const timestamp = now.toLocaleString();
+
+				// Save to history
+				this.plugin.rollHistory.unshift({
+					die: die.label,
+					result: roll,
+					timestamp,
+				});
+				// Keep last 50 rolls
+				if (this.plugin.rollHistory.length > 50)
+					this.plugin.rollHistory.length = 50;
+
+				// Show result in modal
+				resultEl.setText(`${roll}`);
+				subtitleEl.setText(`${die.label} rolled at ${timestamp}`);
+
+				// Obsidian notification
+				new Notice(`🎲 ${die.label}: ${roll}`, 4000);
+
+				// Refresh history list
+				renderHistory();
+			});
+		}
+
+		// ── History ──────────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Roll History" });
+
+		const historyEl = contentEl.createEl("div");
+		Object.assign(historyEl.style, {
+			maxHeight: "200px",
+			overflowY: "auto",
+			border: "1px solid var(--background-modifier-border)",
+			borderRadius: "6px",
+			padding: "6px 8px",
+		});
+
+		const clearBtn = contentEl.createEl("button", { text: "Clear History" });
+		Object.assign(clearBtn.style, {
+			marginTop: "8px",
+			fontSize: "12px",
+		});
+		clearBtn.addEventListener("click", () => {
+			this.plugin.rollHistory = [];
+			renderHistory();
+		});
+
+		const renderHistory = () => {
+			historyEl.empty();
+			if (this.plugin.rollHistory.length === 0) {
+				const empty = historyEl.createEl("div", { text: "No rolls yet." });
+				Object.assign(empty.style, {
+					color: "var(--text-muted)",
+					fontSize: "13px",
+					padding: "4px 0",
+				});
+				return;
+			}
+			for (const entry of this.plugin.rollHistory) {
+				const row = historyEl.createEl("div");
+				Object.assign(row.style, {
+					display: "flex",
+					justifyContent: "space-between",
+					padding: "3px 0",
+					borderBottom: "1px solid var(--background-modifier-border)",
+					fontSize: "13px",
+				});
+				row.createEl("span", {
+					text: `🎲 ${entry.die} → ${entry.result}`,
+				});
+				const ts = row.createEl("span", { text: entry.timestamp });
+				Object.assign(ts.style, { color: "var(--text-muted)" });
+			}
+		};
+
+		renderHistory();
 	}
 
 	onClose() {
