@@ -1,6 +1,6 @@
 # D&D Beyond Importer — Obsidian Plugin
 
-Import any **public** D&D Beyond character sheet directly into your Obsidian vault as a richly-formatted Markdown note.
+Import any **public** D&D Beyond character sheet directly into your Obsidian vault as a richly-formatted Markdown note — and roll dice without ever leaving Obsidian.
 
 ---
 
@@ -14,6 +14,7 @@ Import any **public** D&D Beyond character sheet directly into your Obsidian vau
 - 📜 **Backstory & Notes** — character backstory and campaign notes
 - 🏷️ **YAML front matter** — all key stats as queryable properties for use with Dataview or other plugins
 - 🔄 **Re-import** — re-running on the same character updates the existing note
+- 🎲 **Dice Roller** — roll d4, d6, d8, d10, d12, d20, or d100 with toast notifications and full roll history
 
 ---
 
@@ -44,19 +45,45 @@ npm run build        # produces main.js
 
 ## Usage
 
-### Via ribbon icon
+### Character Importer
+
+#### Via ribbon icon
 Click the **⚔️ sword icon** in the left ribbon bar.
 
-### Via command palette
+#### Via command palette
 Open the command palette (`Ctrl/Cmd + P`) and run:
 > **D&D Beyond Importer: Import character from D&D Beyond**
 
-### Input formats accepted
+#### Input formats accepted
 - Full URL: `https://www.dndbeyond.com/characters/137202151/GpDg8C`
 - Short URL: `https://www.dndbeyond.com/characters/137202151`
 - Bare ID: `137202151`
 
 > ⚠️ **The character sheet must be set to Public on D&D Beyond.** Private characters cannot be fetched.
+
+---
+
+### Dice Roller
+
+#### Via ribbon icon
+Click the **🎲 dice icon** in the left ribbon bar.
+
+#### Via command palette
+Open the command palette (`Ctrl/Cmd + P`) and run:
+> **D&D Beyond Importer: Open Dice Roller**
+
+#### Available dice
+| Die | Sides |
+|:---:|:---:|
+| d4 | 4 |
+| d6 | 6 |
+| d8 | 8 |
+| d10 | 10 |
+| d12 | 12 |
+| d20 | 20 |
+| d100 | 100 |
+
+Each roll displays the result in the modal, fires an Obsidian toast notification (e.g. `🎲 d20: 17`), and is logged to the roll history with a timestamp. History is capped at the last 50 rolls and can be cleared with the **Clear History** button. History persists across modal opens for the duration of the session.
 
 ---
 
@@ -106,6 +133,8 @@ This plugin uses the unofficial internal API endpoint:
 https://character-service.dndbeyond.com/character/v5/character/{ID}
 ```
 This endpoint is not officially documented or supported by D&D Beyond / Wizards of the Coast. It may change or break at any time. The plugin is a read-only consumer and does not modify any data on D&D Beyond.
+
+> **Desktop only note:** The plugin uses Obsidian's native `requestUrl` API to bypass browser CORS restrictions. This means character fetching works correctly on Obsidian Desktop (Windows, macOS, Linux). On Obsidian Mobile the request may be blocked depending on your network environment.
 
 ---
 
