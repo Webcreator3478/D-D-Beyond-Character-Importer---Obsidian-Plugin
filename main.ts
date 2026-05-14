@@ -1023,11 +1023,6 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		// FIX: Use new Setting().setHeading() instead of createEl("h2") directly
-		new Setting(containerEl)
-			.setName("D&D Beyond Importer")
-			.setHeading();
-
 		new Setting(containerEl)
 			.setName("Output folder")
 			.setDesc("Vault folder where character notes are saved (leave blank for vault root).")
