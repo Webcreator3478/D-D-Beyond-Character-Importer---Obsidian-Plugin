@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  id-token: write   # required for artifact attestation
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      # ── Attest main.js provenance ───────────────────────────────────────────
+      - name: Attest main.js
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: main.js
+
+      # ── Bundle release assets ───────────────────────────────────────────────
+      - name: Package release zip
+        run: |
+          mkdir -p release/dndbeyond-importer
+          cp main.js manifest.json release/dndbeyond-importer/
+          cd release
+          zip -r dndbeyond-importer.zip dndbeyond-importer/
+
+      - name: Attest release zip
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: release/dndbeyond-importer.zip
+
+      # ── Create GitHub Release ───────────────────────────────────────────────
+      - name: Read release notes
+        id: notes
+        run: |
+          # Extract the section for the current tag from RELEASE_NOTES.md
+          TAG="${GITHUB_REF_NAME}"
+          NOTES=$(awk "/^## ${TAG//./\\.}/{found=1; next} found && /^## /{exit} found{print}" RELEASE_NOTES.md)
+          if [ -z "$NOTES" ]; then
+            NOTES="See RELEASE_NOTES.md for details."
+          fi
+          echo "NOTES<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.notes.outputs.NOTES }}
+          files: |
+            main.js
+            manifest.json
+            release/dndbeyond-importer.zip
