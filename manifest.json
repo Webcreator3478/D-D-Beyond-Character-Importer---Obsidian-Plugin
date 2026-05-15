@@ -1,7 +1,7 @@
 {
   "id": "dndbeyond-importer",
   "name": "D&D Beyond Importer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.4.0",
   "description": "Import public D&D Beyond characters as beautifully formatted notes into your vault.",
   "author": "Jktaisa",
