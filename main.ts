@@ -709,8 +709,6 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 		...(char.modifiers?.background ?? []),
 		...(char.modifiers?.feat ?? []),
 	];
-	const martialProf = allMods.some(m => m.type === "proficiency" && (m.subType ?? "").includes("martial-weapons"));
-
 	for (const item of char.inventory ?? []) {
 		const def = item.definition as (DdbDefinition & {
 			weaponBehaviors?: Array<{attackType?: number; damage?: {diceString?: string; fixedValue?: number}; properties?: Array<{name?: string}>}>;
@@ -789,7 +787,10 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 export default class DnDBeyondImporterPlugin extends Plugin {
 	settings!: DnDBeyondImporterSettings;
 	rollHistory: DiceRoll[] = [];
+	/** Legacy single-char cache (used by "Open Character Roll Sheet" command fallback). */
 	lastImportedChar: { char: DdbCharacter; stats: Record<string, number>; pb: number } | null = null;
+	/** Per-character cache keyed by DnD Beyond character ID (string). */
+	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }> = new Map();
 
 	async onload() {
 		await this.loadSettings();
@@ -831,6 +832,17 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			},
 		});
 
+		// Ribbon icon — open roll sheet for the note that is currently active
+		this.addRibbonIcon("dices", "Open Roll Sheet for Active Character", () => {
+			void this.openRollSheetForActiveNote();
+		});
+
+		this.addCommand({
+			id: "open-roll-sheet-active-note",
+			name: "Open Roll Sheet for active character note",
+			callback: () => { void this.openRollSheetForActiveNote(); },
+		});
+
 		this.addSettingTab(new DnDBeyondSettingTab(this.app, this));
 	}
 
@@ -840,6 +852,74 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/**
+	 * Reads the `dndbeyond_id` front-matter field from the currently active note
+	 * and opens the roll sheet for that character. If the character data is already
+	 * in the session cache it is used immediately; otherwise it is fetched from the
+	 * D&D Beyond API first.
+	 */
+	async openRollSheetForActiveNote(): Promise<void> {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			new Notice("No note is currently open.", 3000);
+			return;
+		}
+
+		// Read front matter via Obsidian's metadataCache
+		const meta = this.app.metadataCache.getFileCache(activeFile);
+		const charId: string | number | undefined = meta?.frontmatter?.["dndbeyond_id"];
+
+		if (!charId) {
+			new Notice("This note doesn't have a dndbeyond_id front-matter field. Open a character note first, or import a character.", 4000);
+			return;
+		}
+
+		const idStr = String(charId);
+
+		// Use cached data when available
+		const cached = this.charCache.get(idStr);
+		if (cached) {
+			new CharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+			return;
+		}
+
+		// Not cached — fetch from the API
+		new Notice(`⏳ Loading character ${idStr}…`);
+		let data: DdbApiResponse;
+		try {
+			const apiUrl = `https://character-service.dndbeyond.com/character/v5/character/${idStr}`;
+			const resp = await requestUrl({ url: apiUrl, headers: { Accept: "application/json" } });
+			if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
+			data = resp.json as DdbApiResponse;
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ Failed to fetch character: ${msg}`);
+			return;
+		}
+
+		if (!data.data) {
+			new Notice("❌ No character data returned by the API.");
+			return;
+		}
+
+		const char = data.data;
+		const charClasses: DdbClass[] = char.classes ?? [];
+		const charLevel = calcLevel(charClasses);
+		const charPb = profBonus(charLevel);
+		const charStats = {
+			str: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 1),
+			dex: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 2),
+			con: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 3),
+			int: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 4),
+			wis: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 5),
+			cha: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 6),
+		};
+		const entry = { char, stats: charStats, pb: charPb };
+		this.charCache.set(idStr, entry);
+		this.lastImportedChar = entry;
+		new CharacterSheetModal(this.app, this, char, charStats, charPb).open();
 	}
 
 	async importCharacter(url: string): Promise<void> {
@@ -911,7 +991,9 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 				wis: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 5),
 				cha: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 6),
 			};
-			this.lastImportedChar = { char, stats: charStats, pb: charPb };
+			const entry = { char, stats: charStats, pb: charPb };
+			this.lastImportedChar = entry;
+			this.charCache.set(String(char.id), entry);
 			new CharacterSheetModal(this.app, this, char, charStats, charPb).open();
 		}
 
@@ -1009,7 +1091,6 @@ class CharacterSheetModal extends Modal {
 		const result = Math.floor(Math.random() * 20) + 1;
 		const total = result + modifier;
 		const modStr = modifier >= 0 ? `+${modifier}` : `${modifier}`;
-		const totalStr = total >= 0 ? `+${total}` : `${total}`;
 		const now = new Date().toLocaleString();
 		this.plugin.rollHistory.unshift({ die: "d20", result, modifier, label, timestamp: now });
 		if (this.plugin.rollHistory.length > 50) this.plugin.rollHistory.length = 50;
