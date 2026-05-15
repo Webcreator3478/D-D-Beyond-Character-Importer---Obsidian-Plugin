@@ -20,7 +20,19 @@ interface DnDBeyondImporterSettings {
 interface DiceRoll {
 	die: string;
 	result: number;
+	modifier: number;
+	label: string;
 	timestamp: string;
+}
+
+interface CharacterAction {
+	name: string;
+	attackBonus: number | null;
+	damageDice: string | null;
+	damageBonus: number;
+	range: string;
+	notes: string;
+	isSpell: boolean;
 }
 
 // ─── Typed interfaces for D&D Beyond API response ─────────────────────────────
@@ -684,11 +696,100 @@ function buildBackstory(char: DdbCharacter): string {
 	return md;
 }
 
+// ─── Actions extractor ───────────────────────────────────────────────────────
+
+function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: number): CharacterAction[] {
+	const actions: CharacterAction[] = [];
+	const strMod = Math.floor((stats.str - 10) / 2);
+	const dexMod = Math.floor((stats.dex - 10) / 2);
+
+	const allMods: DdbModifier[] = [
+		...(char.modifiers?.class ?? []),
+		...(char.modifiers?.race ?? []),
+		...(char.modifiers?.background ?? []),
+		...(char.modifiers?.feat ?? []),
+	];
+	const martialProf = allMods.some(m => m.type === "proficiency" && (m.subType ?? "").includes("martial-weapons"));
+
+	for (const item of char.inventory ?? []) {
+		const def = item.definition as (DdbDefinition & {
+			weaponBehaviors?: Array<{attackType?: number; damage?: {diceString?: string; fixedValue?: number}; properties?: Array<{name?: string}>}>;
+			isMonkWeapon?: boolean;
+			weaponTypeRange?: number;
+			categoryId?: number;
+		});
+		if (!def || !item.equipped) continue;
+		// categoryId 1 = weapon
+		if ((def as {categoryId?: number}).categoryId !== 1 && !(def as {weaponBehaviors?: unknown[]}).weaponBehaviors) continue;
+
+		const isFinesse = (def as {properties?: Array<{name?: string}>}).properties?.some((p: {name?: string}) => p.name === "Finesse") ?? false;
+		const isRanged = (def as {weaponTypeRange?: number}).weaponTypeRange === 2;
+		const atkMod = isRanged ? dexMod : (isFinesse ? Math.max(strMod, dexMod) : strMod);
+		const attackBonus = atkMod + pb;
+
+		const dmgDice = (def as {damage?: {diceString?: string}}).damage?.diceString ?? null;
+		const dmgBonus = atkMod;
+
+		const rangeVal = def.range?.rangeValue;
+		const rangeStr = rangeVal ? `${rangeVal} ft` : (isRanged ? "Ranged" : "5 ft");
+
+		const propNames = ((def as {properties?: Array<{name?: string}>}).properties ?? []).map((p: {name?: string}) => p.name ?? "").filter(Boolean);
+
+		actions.push({
+			name: def.name ?? "Unknown Weapon",
+			attackBonus,
+			damageDice: dmgDice,
+			damageBonus: dmgBonus,
+			range: rangeStr,
+			notes: propNames.join(", "),
+			isSpell: false,
+		});
+	}
+
+	// Unarmed strike always present
+	const unarmedDmg = 1 + strMod;
+	actions.push({
+		name: "Unarmed Strike",
+		attackBonus: strMod + pb,
+		damageDice: null,
+		damageBonus: unarmedDmg,
+		range: "5 ft",
+		notes: "Bludgeoning",
+		isSpell: false,
+	});
+
+	// Cantrip attack spells
+	const allSpells: DdbSpell[] = [];
+	if (Array.isArray(char.classSpells)) {
+		for (const cs of char.classSpells) for (const sp of cs.spells ?? []) allSpells.push(sp);
+	}
+	const spellAttackBonus = Math.floor((stats.int - 10) / 2) + pb;
+	for (const spell of allSpells) {
+		const def = spell.definition;
+		if (!def || (def.level ?? 0) !== 0) continue;
+		const actType = def.activation?.activationType;
+		if (actType !== 1 && actType !== 3) continue; // action or bonus action only
+		const rangeVal = def.range?.rangeValue;
+		actions.push({
+			name: def.name ?? "Cantrip",
+			attackBonus: spellAttackBonus,
+			damageDice: null,
+			damageBonus: 0,
+			range: rangeVal ? `${rangeVal} ft` : (def.range?.origin ?? "—"),
+			notes: def.school ?? "",
+			isSpell: true,
+		});
+	}
+
+	return actions;
+}
+
 // ─── Plugin class ─────────────────────────────────────────────────────────────
 
 export default class DnDBeyondImporterPlugin extends Plugin {
 	settings!: DnDBeyondImporterSettings;
 	rollHistory: DiceRoll[] = [];
+	lastImportedChar: { char: DdbCharacter; stats: Record<string, number>; pb: number } | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -714,6 +815,19 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			name: "Open Dice Roller",
 			callback: () => {
 				new DiceRollerModal(this.app, this).open();
+			},
+		});
+
+		this.addCommand({
+			id: "open-roll-sheet",
+			name: "Open Character Roll Sheet",
+			callback: () => {
+				if (!this.lastImportedChar) {
+					new Notice("Import a character first to use the Roll Sheet.", 3000);
+					return;
+				}
+				const { char, stats, pb } = this.lastImportedChar;
+				new CharacterSheetModal(this.app, this, char, stats, pb).open();
 			},
 		});
 
@@ -781,6 +895,24 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 		} else {
 			await this.app.vault.create(filePath, markdown);
 			new Notice(`✅ Created "${safeName}.md"`);
+		}
+
+		// Store character data and open roll sheet
+		if (data.data) {
+			const char = data.data;
+			const charClasses: DdbClass[] = char.classes ?? [];
+			const charLevel = calcLevel(charClasses);
+			const charPb = profBonus(charLevel);
+			const charStats = {
+				str: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 1),
+				dex: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 2),
+				con: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 3),
+				int: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 4),
+				wis: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 5),
+				cha: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 6),
+			};
+			this.lastImportedChar = { char, stats: charStats, pb: charPb };
+			new CharacterSheetModal(this.app, this, char, charStats, charPb).open();
 		}
 
 		const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -855,6 +987,248 @@ class ImportModal extends Modal {
 	onClose() {
 		this.contentEl.empty();
 	}
+}
+
+// ─── Character Sheet Roll Modal ──────────────────────────────────────────────
+
+class CharacterSheetModal extends Modal {
+	plugin: DnDBeyondImporterPlugin;
+	char: DdbCharacter;
+	stats: Record<string, number>;
+	pb: number;
+
+	constructor(app: App, plugin: DnDBeyondImporterPlugin, char: DdbCharacter, stats: Record<string, number>, pb: number) {
+		super(app);
+		this.plugin = plugin;
+		this.char = char;
+		this.stats = stats;
+		this.pb = pb;
+	}
+
+	private roll20(modifier: number, label: string): void {
+		const result = Math.floor(Math.random() * 20) + 1;
+		const total = result + modifier;
+		const modStr = modifier >= 0 ? `+${modifier}` : `${modifier}`;
+		const totalStr = total >= 0 ? `+${total}` : `${total}`;
+		const now = new Date().toLocaleString();
+		this.plugin.rollHistory.unshift({ die: "d20", result, modifier, label, timestamp: now });
+		if (this.plugin.rollHistory.length > 50) this.plugin.rollHistory.length = 50;
+		new Notice(`🎲 ${label}: d20(${result})${modStr} = **${total >= 0 ? total : total}**`, 5000);
+		this.renderHistory();
+	}
+
+	private rollDamage(damageDice: string | null, damageBonus: number, label: string): void {
+		let diceResult = 0;
+		let diceLabel = "";
+		if (damageDice) {
+			const m = damageDice.match(/(\d+)d(\d+)/i);
+			if (m) {
+				const count = parseInt(m[1]);
+				const sides = parseInt(m[2]);
+				for (let i = 0; i < count; i++) diceResult += Math.floor(Math.random() * sides) + 1;
+				diceLabel = damageDice;
+			}
+		} else {
+			diceResult = damageBonus;
+			diceLabel = `${damageBonus}`;
+		}
+		const total = diceResult + (damageDice ? damageBonus : 0);
+		const bonusStr = damageBonus >= 0 ? `+${damageBonus}` : `${damageBonus}`;
+		const now = new Date().toLocaleString();
+		this.plugin.rollHistory.unshift({ die: diceLabel, result: diceResult, modifier: damageDice ? damageBonus : 0, label: `${label} DMG`, timestamp: now });
+		if (this.plugin.rollHistory.length > 50) this.plugin.rollHistory.length = 50;
+		new Notice(`⚔️ ${label} DMG: ${diceLabel}(${diceResult})${damageDice ? bonusStr : ""} = **${total}**`, 5000);
+		this.renderHistory();
+	}
+
+	private historyEl!: HTMLElement;
+
+	private renderHistory(): void {
+		if (!this.historyEl) return;
+		this.historyEl.empty();
+		if (this.plugin.rollHistory.length === 0) {
+			const empty = this.historyEl.createEl("div", { text: "No rolls yet." });
+			Object.assign(empty.style, { color: "var(--text-muted)", fontSize: "13px", padding: "4px 0" });
+			return;
+		}
+		for (const entry of this.plugin.rollHistory) {
+			const row = this.historyEl.createEl("div");
+			Object.assign(row.style, {
+				display: "flex", justifyContent: "space-between",
+				padding: "3px 0", borderBottom: "1px solid var(--background-modifier-border)", fontSize: "13px",
+			});
+			const modStr = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
+			const total = entry.result + entry.modifier;
+			row.createEl("span", { text: `🎲 ${entry.label}: ${entry.die}(${entry.result})${modStr} = ${total}` });
+			const ts = row.createEl("span", { text: entry.timestamp });
+			Object.assign(ts.style, { color: "var(--text-muted)" });
+		}
+	}
+
+	private makeRollBtn(container: HTMLElement, label: string, modifier: number, btnText?: string): void {
+		const modStr = modifier >= 0 ? `+${modifier}` : `${modifier}`;
+		const btn = container.createEl("button", { text: btnText ?? `🎲 ${modStr}` });
+		Object.assign(btn.style, { fontSize: "11px", padding: "2px 6px", marginLeft: "6px", cursor: "pointer" });
+		btn.addEventListener("click", () => this.roll20(modifier, label));
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		Object.assign(contentEl.style, { maxHeight: "80vh", overflowY: "auto", padding: "0 4px" });
+
+		contentEl.createEl("h2", { text: `🎲 ${this.char.name ?? "Character"} — Roll Sheet` });
+
+		const { stats, pb, char } = this;
+
+		// ── Initiative ──────────────────────────────────────────────────────────
+		const dexMod = Math.floor((stats.dex - 10) / 2);
+		const initRow = contentEl.createEl("div");
+		Object.assign(initRow.style, { display: "flex", alignItems: "center", marginBottom: "8px" });
+		initRow.createEl("strong", { text: `Initiative: ${dexMod >= 0 ? "+" : ""}${dexMod}` });
+		this.makeRollBtn(initRow, "Initiative", dexMod);
+
+		contentEl.createEl("hr");
+
+		// ── Ability Checks ───────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Ability Checks" });
+		const abilityDefs = [
+			{ label: "STR", key: "str" }, { label: "DEX", key: "dex" }, { label: "CON", key: "con" },
+			{ label: "INT", key: "int" }, { label: "WIS", key: "wis" }, { label: "CHA", key: "cha" },
+		];
+		const abilityGrid = contentEl.createEl("div");
+		Object.assign(abilityGrid.style, { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px", marginBottom: "12px" });
+		for (const { label, key } of abilityDefs) {
+			const mod = Math.floor((stats[key] - 10) / 2);
+			const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
+			const cell = abilityGrid.createEl("div");
+			Object.assign(cell.style, { display: "flex", alignItems: "center", background: "var(--background-secondary)", borderRadius: "4px", padding: "4px 8px" });
+			cell.createEl("span", { text: `${label} ${modStr}` });
+			this.makeRollBtn(cell, `${label} Check`, mod);
+		}
+
+		contentEl.createEl("hr");
+
+		// ── Saving Throws ───────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Saving Throws" });
+		const saveKeys = [
+			{ label: "STR Save", key: "str", subType: "strength-saving-throws" },
+			{ label: "DEX Save", key: "dex", subType: "dexterity-saving-throws" },
+			{ label: "CON Save", key: "con", subType: "constitution-saving-throws" },
+			{ label: "INT Save", key: "int", subType: "intelligence-saving-throws" },
+			{ label: "WIS Save", key: "wis", subType: "wisdom-saving-throws" },
+			{ label: "CHA Save", key: "cha", subType: "charisma-saving-throws" },
+		];
+		const allMods: DdbModifier[] = [
+			...(char.modifiers?.class ?? []), ...(char.modifiers?.race ?? []),
+			...(char.modifiers?.background ?? []), ...(char.modifiers?.feat ?? []),
+		];
+		const saveGrid = contentEl.createEl("div");
+		Object.assign(saveGrid.style, { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px", marginBottom: "12px" });
+		for (const { label, key, subType } of saveKeys) {
+			const base = Math.floor((stats[key] - 10) / 2);
+			const prof = allMods.some(m => m.type === "proficiency" && m.subType === subType);
+			const mod = prof ? base + pb : base;
+			const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
+			const cell = saveGrid.createEl("div");
+			Object.assign(cell.style, { display: "flex", alignItems: "center", background: "var(--background-secondary)", borderRadius: "4px", padding: "4px 8px" });
+			cell.createEl("span", { text: `${label} ${modStr}${prof ? " ✓" : ""}` });
+			this.makeRollBtn(cell, label, mod);
+		}
+
+		contentEl.createEl("hr");
+
+		// ── Skills ──────────────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Skills" });
+		const skillDefs = [
+			{ name: "Acrobatics", stat: "dex", key: "acrobatics" },
+			{ name: "Animal Handling", stat: "wis", key: "animal-handling" },
+			{ name: "Arcana", stat: "int", key: "arcana" },
+			{ name: "Athletics", stat: "str", key: "athletics" },
+			{ name: "Deception", stat: "cha", key: "deception" },
+			{ name: "History", stat: "int", key: "history" },
+			{ name: "Insight", stat: "wis", key: "insight" },
+			{ name: "Intimidation", stat: "cha", key: "intimidation" },
+			{ name: "Investigation", stat: "int", key: "investigation" },
+			{ name: "Medicine", stat: "wis", key: "medicine" },
+			{ name: "Nature", stat: "int", key: "nature" },
+			{ name: "Perception", stat: "wis", key: "perception" },
+			{ name: "Performance", stat: "cha", key: "performance" },
+			{ name: "Persuasion", stat: "cha", key: "persuasion" },
+			{ name: "Religion", stat: "int", key: "religion" },
+			{ name: "Sleight of Hand", stat: "dex", key: "sleight-of-hand" },
+			{ name: "Stealth", stat: "dex", key: "stealth" },
+			{ name: "Survival", stat: "wis", key: "survival" },
+		];
+		const skillGrid = contentEl.createEl("div");
+		Object.assign(skillGrid.style, { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px", marginBottom: "12px" });
+		for (const skill of skillDefs) {
+			const base = Math.floor((stats[skill.stat] - 10) / 2);
+			const expertise = allMods.some(m => m.type === "expertise" && m.subType === skill.key);
+			const prof = allMods.some(m => m.type === "proficiency" && m.subType === skill.key);
+			let mod = base;
+			if (expertise) mod += pb * 2;
+			else if (prof) mod += pb;
+			const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
+			const marker = expertise ? " ★" : prof ? " ✓" : "";
+			const cell = skillGrid.createEl("div");
+			Object.assign(cell.style, { display: "flex", alignItems: "center", background: "var(--background-secondary)", borderRadius: "4px", padding: "3px 6px" });
+			cell.createEl("span", { text: `${skill.name}${marker} ${modStr}`, cls: "" });
+			Object.assign(cell.querySelector("span")!.style ?? {}, { flex: "1", fontSize: "12px" });
+			this.makeRollBtn(cell, skill.name, mod);
+		}
+
+		contentEl.createEl("hr");
+
+		// ── Actions ─────────────────────────────────────────────────────────────
+		const actions = extractActions(char, stats, pb);
+		if (actions.length) {
+			contentEl.createEl("h3", { text: "Actions" });
+			for (const action of actions) {
+				const row = contentEl.createEl("div");
+				Object.assign(row.style, {
+					display: "flex", alignItems: "center", flexWrap: "wrap",
+					background: "var(--background-secondary)", borderRadius: "4px",
+					padding: "5px 8px", marginBottom: "5px", gap: "6px",
+				});
+				const nameEl = row.createEl("span");
+				const atkStr = action.attackBonus != null ? (action.attackBonus >= 0 ? `+${action.attackBonus}` : `${action.attackBonus}`) : "—";
+				const dmgStr = action.damageDice ? `${action.damageDice}${action.damageBonus >= 0 ? "+" : ""}${action.damageBonus}` : `${action.damageBonus}`;
+				nameEl.setText(`${action.isSpell ? "✨ " : "⚔️ "}${action.name}  ATK ${atkStr}  DMG ${dmgStr}  (${action.range})`);
+				Object.assign(nameEl.style, { flex: "1", fontSize: "13px" });
+
+				if (action.attackBonus != null) {
+					const atkBtn = row.createEl("button", { text: "🎲 ATK", cls: "mod-cta" });
+					Object.assign(atkBtn.style, { fontSize: "11px", padding: "2px 7px" });
+					atkBtn.addEventListener("click", () => this.roll20(action.attackBonus!, `${action.name} Attack`));
+				}
+
+				const dmgBtn = row.createEl("button", { text: "🎲 DMG" });
+				Object.assign(dmgBtn.style, { fontSize: "11px", padding: "2px 7px" });
+				dmgBtn.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
+			}
+		}
+
+		contentEl.createEl("hr");
+
+		// ── Roll History ─────────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Roll History" });
+		this.historyEl = contentEl.createEl("div");
+		Object.assign(this.historyEl.style, {
+			maxHeight: "180px", overflowY: "auto",
+			border: "1px solid var(--background-modifier-border)",
+			borderRadius: "6px", padding: "6px 8px",
+		});
+		const clearBtn = contentEl.createEl("button", { text: "Clear History" });
+		Object.assign(clearBtn.style, { marginTop: "8px", fontSize: "12px" });
+		clearBtn.addEventListener("click", () => {
+			this.plugin.rollHistory = [];
+			this.renderHistory();
+		});
+		this.renderHistory();
+	}
+
+	onClose() { this.contentEl.empty(); }
 }
 
 // ─── Dice Roller Modal ────────────────────────────────────────────────────────
@@ -933,6 +1307,8 @@ class DiceRollerModal extends Modal {
 				this.plugin.rollHistory.unshift({
 					die: die.label,
 					result: roll,
+					modifier: 0,
+					label: die.label,
 					timestamp,
 				});
 				// Keep last 50 rolls
@@ -993,8 +1369,10 @@ class DiceRollerModal extends Modal {
 					borderBottom: "1px solid var(--background-modifier-border)",
 					fontSize: "13px",
 				});
-				row.createEl("span", {
-					text: `🎲 ${entry.die} → ${entry.result}`,
+					const entryModStr2 = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
+					const entryTotal2 = entry.result + entry.modifier;
+					row.createEl("span", {
+						text: `🎲 ${entry.label}: ${entry.die}(${entry.result})${entry.modifier !== 0 ? entryModStr2 : ""} = ${entryTotal2}`,
 				});
 				const ts = row.createEl("span", { text: entry.timestamp });
 				Object.assign(ts.style, { color: "var(--text-muted)" });
