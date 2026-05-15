@@ -1,5 +1,20 @@
 # Release Notes
 
+## v1.0.3
+
+### New features
+- **Roll Sheet from any character note** — open the roll sheet for a character at any time, not just immediately after import.
+  - A new **🎲 dices ribbon icon** appears in the left sidebar. Click it while a character note is open to instantly load that character's roll sheet.
+  - New command palette entry: **D&D Beyond Importer: Open Roll Sheet for active character note** — same behaviour, keyboard-accessible.
+  - The character's data is re-used from an in-session cache if it was already imported this session; otherwise it is fetched live from the D&D Beyond API using the `dndbeyond_id` stored in the note's YAML front matter.
+  - Multiple characters are now cached independently — switching between notes and opening their roll sheets works without re-importing.
+
+### Bug fixes
+- Removed unused `martialProf` variable (TypeScript warning resolved).
+- Removed unused `totalStr` variable in `roll20` method (TypeScript warning resolved).
+
+---
+
 ## v1.0.2
 
 ### New features
