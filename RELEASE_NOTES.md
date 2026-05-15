@@ -1,5 +1,22 @@
 # Release Notes
 
+## v1.0.2
+
+### New features
+- **Character Roll Sheet** — after importing a character, a roll sheet modal opens automatically with dice roll buttons for every stat.
+  - **Initiative** — roll d20 + DEX modifier directly from the sheet.
+  - **Ability Checks** — one roll button per ability score (STR/DEX/CON/INT/WIS/CHA).
+  - **Saving Throws** — proficiency bonus applied automatically; proficient saves marked ✓.
+  - **Skills** — all 18 skills with correct modifiers; expertise (★) and proficiency (✓) included.
+  - **Actions** — attack roll (🎲 ATK) and damage roll (🎲 DMG) buttons for each equipped weapon and attack cantrip.
+- Roll history now logs the modifier and total alongside the raw die result (e.g. `d20(14)+5 = 19`).
+- Re-open the roll sheet any time via command palette: **D&D Beyond Importer: Open Character Roll Sheet**.
+
+### Bug fixes
+- Removed plugin name from settings tab heading (Obsidian plugin guideline compliance).
+
+---
+
 ## v1.0.1
 
 ### Bug fixes
@@ -8,7 +25,6 @@
 ### Notes
 - Requires Obsidian 1.4.0 or later.
 - Character sheets must be set to **Public** on D&D Beyond for importing to work.
-- Character fetching works on Obsidian Desktop (Windows, macOS, Linux). On mobile it may be blocked depending on your network environment.
 
 ---
 
