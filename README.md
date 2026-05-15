@@ -1,36 +1,45 @@
 # D&D Beyond Importer — Obsidian Plugin
 
-Import any **public** D&D Beyond character sheet directly into your Obsidian vault as a richly-formatted Markdown note — and roll dice without ever leaving Obsidian.
+Pull any **public** D&D Beyond character sheet into your Obsidian vault as a formatted Markdown note, then roll dice and run checks without ever leaving the app.
 
 ---
 
-## Features
+## What it does
 
 - 📋 **Full character sheet** — ability scores, saving throws, skills, HP, AC, speed, proficiency bonus
-- ⚔️ **Equipment** — full inventory table with equipped status and weight
+- ⚔️ **Equipment** — inventory table with equipped status and weight
 - 📖 **Spells** — grouped by level, with school, cast time, range, concentration, and prepared status
 - 🌟 **Features & Traits** — racial traits, feats, personality/ideals/bonds/flaws
 - 💰 **Currency** — all coin types
 - 📜 **Backstory & Notes** — character backstory and campaign notes
-- 🏷️ **YAML front matter** — all key stats as queryable properties for use with Dataview or other plugins
-- 🔄 **Re-import** — re-running on the same character updates the existing note
-- 🎲 **Dice Roller** — roll d4, d6, d8, d10, d12, d20, or d100 with toast notifications and full roll history
+- 🏷️ **YAML front matter** — all key stats as queryable properties for Dataview
+- 🔄 **Re-import** — running the importer again on the same character updates the existing note in place
+- 🎲 **Dice Roller** — d4 through d100 with toast notifications and roll history
+- 📊 **Roll Sheet** — per-character modal with roll buttons for every stat, skill, saving throw, and weapon attack
 
 ---
 
 ## Installation
 
-### Manual (recommended until published)
+### Automatic (recommended for stable releases)
+1. Open Settings.
+2. In the side menu, select Community plugins.
+3. Select Browse.
+4. Search "D&D Beyond Importer".
+5. Select the plugin.
+6. Select install.
+7. Enable the plugin.
+8. Configure plugin settings. (Optional)
 
-1. Download the latest release zip from the Releases page (or build from source).
-2. Extract the folder into your vault's plugin directory:
+### Manual (recommended until published to the community directory / latest releases)
+
+1. Download the latest release zip from the Releases page (or build from source — see below).
+2. Unzip into your vault's plugin directory:
    ```
    <YourVault>/.obsidian/plugins/dndbeyond-importer/
    ```
-   The folder must contain at minimum:
-   - `main.js`
-   - `manifest.json`
-3. In Obsidian → Settings → Community Plugins → enable **D&D Beyond Importer**.
+   The folder needs at minimum `main.js` and `manifest.json`.
+3. Go to Obsidian → Settings → Community Plugins and enable **D&D Beyond Importer**.
 
 ### Build from source
 
@@ -38,52 +47,62 @@ Import any **public** D&D Beyond character sheet directly into your Obsidian vau
 git clone https://github.com/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin.git
 cd dndbeyond-importer
 npm install
-npm run build        # produces main.js
+npm run build
 ```
+
+This produces `main.js` in the project root.
 
 ---
 
 ## Usage
 
-### Character Importer
+### Importing a character
 
-#### Via ribbon icon
-Click the **⚔️ sword icon** in the left ribbon bar.
+**Ribbon:** click the ⚔️ sword icon in the left sidebar.
 
-#### Via command palette
-Open the command palette (`Ctrl/Cmd + P`) and run:
-> **D&D Beyond Importer: Import character from D&D Beyond**
+**Command palette:** `Ctrl/Cmd + P` → *D&D Beyond Importer: Import character from D&D Beyond*
 
-#### Input formats accepted
+Any of these formats work as input:
 - Full URL: `https://www.dndbeyond.com/characters/137202151/GpDg8C`
 - Short URL: `https://www.dndbeyond.com/characters/137202151`
 - Bare ID: `137202151`
 
-> ⚠️ **The character sheet must be set to Public on D&D Beyond.** Private characters cannot be fetched.
+> ⚠️ The character sheet must be set to **Public** on D&D Beyond. Private sheets can't be fetched.
 
 ---
 
-### Dice Roller
+### Character Roll Sheet
 
-#### Via ribbon icon
-Click the **🎲 dice icon** in the left ribbon bar.
+After importing, a roll sheet opens automatically. You can also reopen it at any time:
 
-#### Via command palette
-Open the command palette (`Ctrl/Cmd + P`) and run:
-> **D&D Beyond Importer: Open Dice Roller**
+**Ribbon:** click the 🎲 dice icon while the character note is active.
 
-#### Available dice
-| Die | Sides |
-|:---:|:---:|
-| d4 | 4 |
-| d6 | 6 |
-| d8 | 8 |
-| d10 | 10 |
-| d12 | 12 |
-| d20 | 20 |
-| d100 | 100 |
+**Command palette:** *D&D Beyond Importer: Open Roll Sheet for active character note*
 
-Each roll displays the result in the modal, fires an Obsidian toast notification (e.g. `🎲 d20: 17`), and is logged to the roll history with a timestamp. History is capped at the last 50 rolls and can be cleared with the **Clear History** button. History persists across modal opens for the duration of the session.
+The roll sheet pulls character data from a session cache if the character was already imported this session — otherwise it fetches fresh from the API using the `dndbeyond_id` stored in the note's front matter. Multiple characters are cached independently, so switching between notes works without re-importing anyone.
+
+What's on the roll sheet:
+- **Initiative** — d20 + DEX modifier
+- **Ability Checks** — one roll button per score (STR / DEX / CON / INT / WIS / CHA)
+- **Saving Throws** — proficiency bonus applied automatically; proficient saves marked ✓
+- **Skills** — all 18 skills with correct modifiers; expertise (★) and proficiency (✓) shown
+- **Actions** — 🎲 ATK and 🎲 DMG buttons for each equipped weapon and attack cantrip
+
+Roll history logs the modifier and total alongside the raw result (e.g. `d20(14)+5 = 19`).
+
+---
+
+### Standalone Dice Roller
+
+If you just want to roll dice without a character sheet open:
+
+**Ribbon:** click the 🎲 dice icon with no character note active.
+
+**Command palette:** *D&D Beyond Importer: Open Dice Roller*
+
+Available dice: d4, d6, d8, d10, d12, d20, d100.
+
+Each roll shows up in the modal, fires a toast notification (e.g. `🎲 d20: 17`), and gets logged to the roll history with a timestamp. History is capped at the last 50 rolls and can be wiped with **Clear History**. It persists across modal opens for the duration of the session.
 
 ---
 
@@ -91,15 +110,15 @@ Each roll displays the result in the modal, fires an Obsidian toast notification
 
 | Setting | Default | Description |
 |:---|:---:|:---|
-| Output folder | `Characters` | Vault folder where `.md` notes are saved |
-| Include spells | ✓ | Import spell list and spell slots |
-| Include equipment | ✓ | Import inventory table |
-| Include features & traits | ✓ | Import racial traits, feats, personality traits |
-| Include backstory & notes | ✓ | Import backstory and campaign notes |
+| Output folder | `Characters` | Where character notes are saved in your vault |
+| Include spells | ✓ | Spell list and spell slots |
+| Include equipment | ✓ | Inventory table |
+| Include features & traits | ✓ | Racial traits, feats, personality traits |
+| Include backstory & notes | ✓ | Backstory and campaign notes |
 
 ---
 
-## Generated note structure
+## Note structure
 
 ```
 ---                          ← YAML front matter (queryable with Dataview)
@@ -126,15 +145,15 @@ tags: ["dnd-character", …]
 
 ---
 
-## Notes on the D&D Beyond API
+## A note on the D&D Beyond API
 
-This plugin uses the unofficial internal API endpoint:
+The plugin fetches from an unofficial internal endpoint:
 ```
 https://character-service.dndbeyond.com/character/v5/character/{ID}
 ```
-This endpoint is not officially documented or supported by D&D Beyond / Wizards of the Coast. It may change or break at any time. The plugin is a read-only consumer and does not modify any data on D&D Beyond.
+This isn't officially documented or supported by D&D Beyond / Wizards of the Coast and could change or break without warning. The plugin is read-only — it never writes anything back to D&D Beyond.
 
-> **Desktop only note:** The plugin uses Obsidian's native `requestUrl` API to bypass browser CORS restrictions. This means character fetching works correctly on Obsidian Desktop (Windows, macOS, Linux). On Obsidian Mobile the request may be blocked depending on your network environment.
+**Mobile:** character fetching uses Obsidian's `requestUrl` API to work around browser CORS restrictions. This works reliably on desktop (Windows, macOS, Linux). On mobile, the request may be blocked depending on your network setup.
 
 ---
 
