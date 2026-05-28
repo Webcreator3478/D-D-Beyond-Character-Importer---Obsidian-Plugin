@@ -1,5 +1,16 @@
 # Release Notes
 
+## v1.0.4
+
+### Bug fixes
+- Removed damage dice fallback for homebrew/custom weapons that have no damage defined. Items such as utility ranged weapons now correctly show ATK-only — no DMG value in the character note and no **🎲 DMG** button in the roll sheet.
+- Fixed custom/homebrew weapons (those without `categoryId: 1`) not appearing in the **Actions & Attacks** section at all. They are now detected via the presence of `weaponBehaviors` and included correctly.
+- Added missing **## Actions & Attacks** table to the imported character note. Previously attack actions were only visible in the roll sheet modal; they are now written into the Markdown note with columns for ATK bonus, damage, range, and properties.
+- Fixed roll sheet **🎲 DMG** button appearing for weapons with no damage data.
+- Cleaned up `extractActions` type assertions — replaced scattered `as {…}` casts with a properly typed extended interface.
+
+---
+
 ## v1.0.3
 
 ### New features
