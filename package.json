@@ -1,6 +1,6 @@
 {
   "name": "dndbeyond-importer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Import public D&D Beyond characters as Obsidian notes",
   "main": "main.js",
   "scripts": {
