@@ -386,6 +386,12 @@ dndbeyond_id: ${char.id}
 		md += buildEquipment(char.inventory ?? []);
 	}
 
+	// ── Actions & Attacks ───────────────────────────────────────────────────
+	const actionList = extractActions(char, rawStats, pb);
+	if (actionList.length) {
+		md += buildActionsSection(actionList);
+	}
+
 	// ── Features & Traits ───────────────────────────────────────────────────
 	if (settings.includeFeatures) {
 		md += buildFeatures(char);
@@ -567,6 +573,24 @@ function buildEquipment(inventory: DdbInventoryItem[]): string {
 	return md;
 }
 
+function buildActionsSection(actions: CharacterAction[]): string {
+	let md = `## Actions & Attacks\n\n`;
+	md += `| Name | ATK Bonus | Damage | Range | Notes |\n`;
+	md += `|:---|:---:|:---|:---:|:---|\n`;
+	for (const a of actions) {
+		const atkStr = a.attackBonus != null
+			? (a.attackBonus >= 0 ? `+${a.attackBonus}` : `${a.attackBonus}`)
+			: "—";
+		const dmgStr = a.damageDice
+			? `${a.damageDice}${a.damageBonus !== 0 ? (a.damageBonus >= 0 ? `+${a.damageBonus}` : `${a.damageBonus}`) : ""}`
+			: (a.damageBonus !== 0 ? `${a.damageBonus}` : "—");
+		const prefix = a.isSpell ? "✨ " : "⚔️ ";
+		md += `| ${prefix}${a.name} | ${atkStr} | ${dmgStr} | ${a.range} | ${a.notes || "—"} |\n`;
+	}
+	md += "\n";
+	return md;
+}
+
 function buildFeatures(char: DdbCharacter): string {
 	let md = `## Features & Traits\n\n`;
 
@@ -715,23 +739,32 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 			isMonkWeapon?: boolean;
 			weaponTypeRange?: number;
 			categoryId?: number;
+			damage?: { diceString?: string; fixedValue?: number };
+			properties?: Array<{ name?: string }>;
 		});
 		if (!def || !item.equipped) continue;
-		// categoryId 1 = weapon
-		if ((def as {categoryId?: number}).categoryId !== 1 && !(def as {weaponBehaviors?: unknown[]}).weaponBehaviors) continue;
 
-		const isFinesse = (def as {properties?: Array<{name?: string}>}).properties?.some((p: {name?: string}) => p.name === "Finesse") ?? false;
-		const isRanged = (def as {weaponTypeRange?: number}).weaponTypeRange === 2;
+		// Accept categoryId 1 (standard weapons) or items that have weaponBehaviors (custom/magic weapons)
+		const hasWeaponBehaviors = Array.isArray(def.weaponBehaviors) && def.weaponBehaviors.length > 0;
+		if (def.categoryId !== 1 && !hasWeaponBehaviors) continue;
+
+		const isFinesse = def.properties?.some((p) => p.name === "Finesse") ?? false;
+		const isRanged = def.weaponTypeRange === 2;
 		const atkMod = isRanged ? dexMod : (isFinesse ? Math.max(strMod, dexMod) : strMod);
 		const attackBonus = atkMod + pb;
 
-		const dmgDice = (def as {damage?: {diceString?: string}}).damage?.diceString ?? null;
-		const dmgBonus = atkMod;
+		// Only use damage dice if explicitly defined on the item — homebrew items with no
+		// damage field (e.g. utility weapons) are ATK-only and show no DMG roll.
+		const dmgDice: string | null = def.damage?.diceString ?? null;
+		const fixedVal: number | null = def.damage?.fixedValue ?? null;
+		const dmgBonus = dmgDice != null || fixedVal != null ? atkMod + (fixedVal ?? 0) : 0;
 
+		// Build range string — prefer explicit rangeValue, then properties, then defaults
 		const rangeVal = def.range?.rangeValue;
-		const rangeStr = rangeVal ? `${rangeVal} ft` : (isRanged ? "Ranged" : "5 ft");
-
-		const propNames = ((def as {properties?: Array<{name?: string}>}).properties ?? []).map((p: {name?: string}) => p.name ?? "").filter(Boolean);
+		const propNames = (def.properties ?? []).map((p) => p.name ?? "").filter(Boolean);
+		const rangeStr = rangeVal
+			? `${rangeVal} ft`
+			: (isRanged ? "Ranged" : "5 ft");
 
 		actions.push({
 			name: def.name ?? "Unknown Weapon",
@@ -1273,8 +1306,12 @@ class CharacterSheetModal extends Modal {
 					padding: "5px 8px", marginBottom: "5px", gap: "6px",
 				});
 				const nameEl = row.createEl("span");
-				const atkStr = action.attackBonus != null ? (action.attackBonus >= 0 ? `+${action.attackBonus}` : `${action.attackBonus}`) : "—";
-				const dmgStr = action.damageDice ? `${action.damageDice}${action.damageBonus >= 0 ? "+" : ""}${action.damageBonus}` : `${action.damageBonus}`;
+				const atkStr = action.attackBonus != null
+					? (action.attackBonus >= 0 ? `+${action.attackBonus}` : `${action.attackBonus}`)
+					: "—";
+				const dmgStr = action.damageDice
+					? `${action.damageDice}${action.damageBonus !== 0 ? (action.damageBonus >= 0 ? `+${action.damageBonus}` : `${action.damageBonus}`) : ""}`
+					: (action.damageBonus !== 0 ? `${action.damageBonus}` : "—");
 				nameEl.setText(`${action.isSpell ? "✨ " : "⚔️ "}${action.name}  ATK ${atkStr}  DMG ${dmgStr}  (${action.range})`);
 				Object.assign(nameEl.style, { flex: "1", fontSize: "13px" });
 
@@ -1284,9 +1321,13 @@ class CharacterSheetModal extends Modal {
 					atkBtn.addEventListener("click", () => this.roll20(action.attackBonus!, `${action.name} Attack`));
 				}
 
-				const dmgBtn = row.createEl("button", { text: "🎲 DMG" });
-				Object.assign(dmgBtn.style, { fontSize: "11px", padding: "2px 7px" });
-				dmgBtn.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
+				// Only show DMG button if there is actual damage to roll
+				const hasDmg = action.damageDice != null || action.damageBonus !== 0;
+				if (hasDmg) {
+					const dmgBtn = row.createEl("button", { text: "🎲 DMG" });
+					Object.assign(dmgBtn.style, { fontSize: "11px", padding: "2px 7px" });
+					dmgBtn.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
+				}
 			}
 		}
 
