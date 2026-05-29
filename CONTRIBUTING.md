@@ -130,6 +130,39 @@ The API response is typed through the `Ddb*` interfaces. If you find a field in 
 
 ---
 
+## New Features: HP Tracker & Enhanced Dice Roller
+
+### HP Tracker Modal
+
+A persistent per-character HP tracking modal (new command: **D&D Beyond Importer: Open HP Tracker**) with:
+- Visual HP bar (green → yellow → red as health drops)
+- Current HP input + quick adjust buttons (±1, ±5)
+- Temporary HP management
+- Max HP setup (for leveling up)
+- Per-character state stored in `plugin.hpTracking` Map
+
+The tracker persists for the entire Obsidian session and is keyed by character note name or ID.
+
+### Enhanced Dice Roller
+
+The dice roller modal now includes:
+
+**Filtering:**
+- Dropdown to filter history by die type (d4, d6, d20, etc.)
+- "All dice" option to show complete history
+
+**Export:**
+- **Export CSV** — downloads roll history as CSV file with die, result, modifier, total, and timestamp
+- **Copy History** — copies formatted history to clipboard for pasting into Discord, notes, etc.
+
+**Statistics:**
+- Live stats section showing: average, max, min, mode, critical counts
+- 🎉 Nat 20+ count (for d20 rolls)
+- 💀 Nat 1 count (for d20 rolls)
+- Statistics update with the filter (shows stats for filtered subset only)
+
+---
+
 ## Submitting a Pull Request
 
 1. Fork the repository and create a branch from `main`:
