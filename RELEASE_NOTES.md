@@ -1,5 +1,24 @@
 # Release Notes
 
+## v1.1.0
+
+### New features
+- **HP Tracker Modal** — persistent per-character health tracking during a session.
+  - Visual HP bar (color-coded: green/yellow/red based on health %)
+  - Current HP input field + quick adjust buttons (±1, ±5)
+  - Temporary HP tracking (displayed alongside current)
+  - Max HP configuration (useful for level-up changes)
+  - New command: **D&D Beyond Importer: Open HP Tracker**
+  - Supports multiple characters — HP tracking is keyed per character and persists across the session
+
+- **Enhanced Dice Roller** — new filtering, export, and statistics features.
+  - **Filter by die type** — dropdown to show only d4, d6, d20, etc. History stats update to match the filter
+  - **Export CSV** — download roll history as a spreadsheet-ready CSV file
+  - **Copy to Clipboard** — formatted history for pasting into Discord, notes, or other apps
+  - **Live Statistics** — average, max, min, and mode displayed below the history. For d20 rolls, shows count of Nat 20+ (🎉) and Nat 1 (💀)
+
+---
+
 ## v1.0.4
 
 ### Bug fixes
