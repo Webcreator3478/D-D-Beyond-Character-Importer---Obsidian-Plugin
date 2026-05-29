@@ -820,6 +820,8 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 export default class DnDBeyondImporterPlugin extends Plugin {
 	settings!: DnDBeyondImporterSettings;
 	rollHistory: DiceRoll[] = [];
+	/** HP tracking state persisted across sessions. Maps character ID or note path to HP. */
+	hpTracking: Map<string, {maxHp: number; currentHp: number; tempHp: number}> = new Map();
 	/** Legacy single-char cache (used by "Open Character Roll Sheet" command fallback). */
 	lastImportedChar: { char: DdbCharacter; stats: Record<string, number>; pb: number } | null = null;
 	/** Per-character cache keyed by DnD Beyond character ID (string). */
@@ -874,6 +876,16 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			id: "open-roll-sheet-active-note",
 			name: "Open Roll Sheet for active character note",
 			callback: () => { void this.openRollSheetForActiveNote(); },
+		});
+
+		this.addCommand({
+			id: "open-hp-tracker",
+			name: "Open HP Tracker",
+			callback: () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				const characterId = activeFile?.basename ?? "default";
+				new HPTrackerModal(this.app, this, characterId).open();
+			},
 		});
 
 		this.addSettingTab(new DnDBeyondSettingTab(this.app, this));
@@ -1353,10 +1365,213 @@ class CharacterSheetModal extends Modal {
 	onClose() { this.contentEl.empty(); }
 }
 
+// ─── HP Tracker Modal ─────────────────────────────────────────────────────────
+
+class HPTrackerModal extends Modal {
+	plugin: DnDBeyondImporterPlugin;
+	characterId: string;
+
+	constructor(app: App, plugin: DnDBeyondImporterPlugin, characterId: string) {
+		super(app);
+		this.plugin = plugin;
+		this.characterId = characterId;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl("h2", { text: "❤️ HP Tracker" });
+
+		// Get or create HP tracker for this character
+		let tracker = this.plugin.hpTracking.get(this.characterId);
+		if (!tracker) {
+			tracker = { maxHp: 30, currentHp: 30, tempHp: 0 };
+			this.plugin.hpTracking.set(this.characterId, tracker);
+		}
+
+		// ── HP Display ───────────────────────────────────────────────────────
+		const displayEl = contentEl.createEl("div");
+		Object.assign(displayEl.style, {
+			background: "var(--background-secondary)",
+			borderRadius: "8px",
+			padding: "16px",
+			marginBottom: "16px",
+			textAlign: "center",
+		});
+
+		const hpBarEl = displayEl.createEl("div");
+		Object.assign(hpBarEl.style, {
+			display: "flex",
+			height: "40px",
+			borderRadius: "6px",
+			overflow: "hidden",
+			marginBottom: "8px",
+			background: "var(--background-modifier-border)",
+		});
+
+		const hpPercent = (tracker.currentHp / tracker.maxHp) * 100;
+		const hpColor = hpPercent > 50 ? "#4ade80" : hpPercent > 25 ? "#eab308" : "#ef4444";
+
+		const hpFillEl = hpBarEl.createEl("div");
+		Object.assign(hpFillEl.style, {
+			width: `${Math.max(0, hpPercent)}%`,
+			background: hpColor,
+			transition: "width 0.2s ease",
+		});
+
+		const hpTextEl = displayEl.createEl("div");
+		Object.assign(hpTextEl.style, {
+			fontSize: "18px",
+			fontWeight: "bold",
+			marginBottom: "8px",
+		});
+
+		const tempEl = displayEl.createEl("div");
+		Object.assign(tempEl.style, { fontSize: "13px", color: "var(--text-muted)" });
+
+		const updateDisplay = () => {
+			const total = tracker!.currentHp + tracker!.tempHp;
+			hpTextEl.setText(`${total}/${tracker!.maxHp} HP`);
+			if (tracker!.tempHp > 0) {
+				tempEl.setText(`Temp: ${tracker!.tempHp}`);
+			} else {
+				tempEl.setText("");
+			}
+
+			const newPercent = (tracker!.currentHp / tracker!.maxHp) * 100;
+			const newColor = newPercent > 50 ? "#4ade80" : newPercent > 25 ? "#eab308" : "#ef4444";
+			hpFillEl.style.width = `${Math.max(0, newPercent)}%`;
+			hpFillEl.style.background = newColor;
+		};
+
+		// ── Current HP Controls ──────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Current HP" });
+
+		const currentCtrlEl = contentEl.createEl("div");
+		Object.assign(currentCtrlEl.style, {
+			display: "flex",
+			gap: "8px",
+			marginBottom: "16px",
+			alignItems: "center",
+		});
+
+		const currentInputEl = currentCtrlEl.createEl("input");
+		Object.assign(currentInputEl, {
+			type: "number",
+			value: String(tracker.currentHp),
+			min: "0",
+			max: String(tracker.maxHp),
+		});
+		Object.assign(currentInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		currentInputEl.addEventListener("change", () => {
+			tracker!.currentHp = Math.max(0, Math.min(tracker!.maxHp, Number(currentInputEl.value)));
+			updateDisplay();
+		});
+
+		const minusBtn = currentCtrlEl.createEl("button", { text: "−5" });
+		Object.assign(minusBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		minusBtn.addEventListener("click", () => {
+			tracker!.currentHp = Math.max(0, tracker!.currentHp - 5);
+			currentInputEl.value = String(tracker!.currentHp);
+			updateDisplay();
+		});
+
+		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1" });
+		Object.assign(minusOneBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		minusOneBtn.addEventListener("click", () => {
+			tracker!.currentHp = Math.max(0, tracker!.currentHp - 1);
+			currentInputEl.value = String(tracker!.currentHp);
+			updateDisplay();
+		});
+
+		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1" });
+		Object.assign(plusOneBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		plusOneBtn.addEventListener("click", () => {
+			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 1);
+			currentInputEl.value = String(tracker!.currentHp);
+			updateDisplay();
+		});
+
+		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5" });
+		Object.assign(plusFiveBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		plusFiveBtn.addEventListener("click", () => {
+			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 5);
+			currentInputEl.value = String(tracker!.currentHp);
+			updateDisplay();
+		});
+
+		// ── Temporary HP Controls ────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Temporary HP" });
+
+		const tempCtrlEl = contentEl.createEl("div");
+		Object.assign(tempCtrlEl.style, {
+			display: "flex",
+			gap: "8px",
+			marginBottom: "16px",
+			alignItems: "center",
+		});
+
+		const tempInputEl = tempCtrlEl.createEl("input");
+		Object.assign(tempInputEl, {
+			type: "number",
+			value: String(tracker.tempHp),
+			min: "0",
+		});
+		Object.assign(tempInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		tempInputEl.addEventListener("change", () => {
+			tracker!.tempHp = Math.max(0, Number(tempInputEl.value));
+			updateDisplay();
+		});
+
+		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear" });
+		Object.assign(tempClearBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		tempClearBtn.addEventListener("click", () => {
+			tracker!.tempHp = 0;
+			tempInputEl.value = "0";
+			updateDisplay();
+		});
+
+		// ── Max HP Setup ─────────────────────────────────────────────────────
+		contentEl.createEl("h3", { text: "Max HP" });
+
+		const maxCtrlEl = contentEl.createEl("div");
+		Object.assign(maxCtrlEl.style, {
+			display: "flex",
+			gap: "8px",
+			marginBottom: "16px",
+			alignItems: "center",
+		});
+
+		const maxInputEl = maxCtrlEl.createEl("input");
+		Object.assign(maxInputEl, {
+			type: "number",
+			value: String(tracker.maxHp),
+			min: "1",
+		});
+		Object.assign(maxInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		maxInputEl.addEventListener("change", () => {
+			tracker!.maxHp = Math.max(1, Number(maxInputEl.value));
+			// Cap current HP to new max
+			tracker!.currentHp = Math.min(tracker!.currentHp, tracker!.maxHp);
+			currentInputEl.value = String(tracker!.currentHp);
+			updateDisplay();
+		});
+
+		// Initial display
+		updateDisplay();
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 // ─── Dice Roller Modal ────────────────────────────────────────────────────────
 
 class DiceRollerModal extends Modal {
 	plugin: DnDBeyondImporterPlugin;
+	filterDie: string | null = null; // null = show all
 
 	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
 		super(app);
@@ -1445,13 +1660,45 @@ class DiceRollerModal extends Modal {
 				new Notice(`🎲 ${die.label}: ${roll}`, 4000);
 
 				// Refresh history list
-				renderHistory();
+				this.renderHistory();
 			});
 		}
 
 		// ── History ──────────────────────────────────────────────────────────
 		contentEl.createEl("h3", { text: "Roll History" });
 
+		// ── History controls (filter, export, stats) ────────────────────────
+		const controlsEl = contentEl.createEl("div");
+		Object.assign(controlsEl.style, {
+			display: "flex",
+			gap: "6px",
+			marginBottom: "8px",
+			flexWrap: "wrap",
+		});
+
+		const filterLabel = controlsEl.createEl("label");
+		Object.assign(filterLabel.style, { fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" });
+		filterLabel.setText("Filter:");
+		const filterSelect = filterLabel.createEl("select");
+		filterSelect.add(new Option("All dice", ""));
+		for (const die of dice) {
+			filterSelect.add(new Option(die.label, die.label));
+		}
+		filterSelect.addEventListener("change", (e) => {
+			this.filterDie = (e.target as HTMLSelectElement).value || null;
+			this.renderHistory();
+		});
+		Object.assign(filterSelect.style, { fontSize: "12px", padding: "2px 4px" });
+
+		const exportBtn = controlsEl.createEl("button", { text: "Export CSV" });
+		Object.assign(exportBtn.style, { fontSize: "11px", padding: "3px 8px" });
+		exportBtn.addEventListener("click", () => this.exportHistoryCSV());
+
+		const copyBtn = controlsEl.createEl("button", { text: "Copy History" });
+		Object.assign(copyBtn.style, { fontSize: "11px", padding: "3px 8px" });
+		copyBtn.addEventListener("click", () => this.copyHistoryToClipboard());
+
+		// ── History display ─────────────────────────────────────────────────
 		const historyEl = contentEl.createEl("div");
 		Object.assign(historyEl.style, {
 			maxHeight: "200px",
@@ -1460,6 +1707,19 @@ class DiceRollerModal extends Modal {
 			borderRadius: "6px",
 			padding: "6px 8px",
 		});
+		(this as any).historyEl = historyEl; // Store for renderHistory
+
+		// ── Statistics section ───────────────────────────────────────────────
+		const statsEl = contentEl.createEl("div");
+		Object.assign(statsEl.style, {
+			marginTop: "12px",
+			fontSize: "12px",
+			color: "var(--text-muted)",
+			padding: "8px",
+			background: "var(--background-secondary)",
+			borderRadius: "4px",
+		});
+		(this as any).statsEl = statsEl; // Store for renderHistory
 
 		const clearBtn = contentEl.createEl("button", { text: "Clear History" });
 		Object.assign(clearBtn.style, {
@@ -1468,21 +1728,32 @@ class DiceRollerModal extends Modal {
 		});
 		clearBtn.addEventListener("click", () => {
 			this.plugin.rollHistory = [];
-			renderHistory();
+			this.renderHistory();
 		});
 
-		const renderHistory = () => {
-			historyEl.empty();
-			if (this.plugin.rollHistory.length === 0) {
-				const empty = historyEl.createEl("div", { text: "No rolls yet." });
-				Object.assign(empty.style, {
-					color: "var(--text-muted)",
-					fontSize: "13px",
-					padding: "4px 0",
-				});
-				return;
-			}
-			for (const entry of this.plugin.rollHistory) {
+		this.renderHistory();
+	}
+
+	getFilteredHistory(): DiceRoll[] {
+		if (!this.filterDie) return this.plugin.rollHistory;
+		return this.plugin.rollHistory.filter((r) => r.die === this.filterDie);
+	}
+
+	renderHistory() {
+		const historyEl = (this as any).historyEl;
+		const statsEl = (this as any).statsEl;
+		const filtered = this.getFilteredHistory();
+
+		historyEl.empty();
+		if (filtered.length === 0) {
+			const empty = historyEl.createEl("div", { text: "No rolls yet." });
+			Object.assign(empty.style, {
+				color: "var(--text-muted)",
+				fontSize: "13px",
+				padding: "4px 0",
+			});
+		} else {
+			for (const entry of filtered) {
 				const row = historyEl.createEl("div");
 				Object.assign(row.style, {
 					display: "flex",
@@ -1491,17 +1762,88 @@ class DiceRollerModal extends Modal {
 					borderBottom: "1px solid var(--background-modifier-border)",
 					fontSize: "13px",
 				});
-					const entryModStr2 = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
-					const entryTotal2 = entry.result + entry.modifier;
-					row.createEl("span", {
-						text: `🎲 ${entry.label}: ${entry.die}(${entry.result})${entry.modifier !== 0 ? entryModStr2 : ""} = ${entryTotal2}`,
+				const entryModStr = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
+				const entryTotal = entry.result + entry.modifier;
+				row.createEl("span", {
+					text: `🎲 ${entry.label}: ${entry.die}(${entry.result})${entry.modifier !== 0 ? entryModStr : ""} = ${entryTotal}`,
 				});
 				const ts = row.createEl("span", { text: entry.timestamp });
 				Object.assign(ts.style, { color: "var(--text-muted)" });
 			}
-		};
+		}
 
-		renderHistory();
+		// ── Update statistics ───────────────────────────────────────────────
+		this.updateStats(filtered, statsEl);
+	}
+
+	updateStats(filtered: DiceRoll[], statsEl: HTMLElement) {
+		if (filtered.length === 0) {
+			statsEl.setText("");
+			return;
+		}
+
+		const results = filtered.map((r) => r.result);
+		const avg = (results.reduce((a, b) => a + b, 0) / results.length).toFixed(2);
+		const max = Math.max(...results);
+		const min = Math.min(...results);
+		const nat20s = results.filter((r) => r === 20).length;
+		const nat1s = results.filter((r) => r === 1).length;
+
+		// Mode (most common roll)
+		const freq: Record<number, number> = {};
+		results.forEach((r) => {
+			freq[r] = (freq[r] ?? 0) + 1;
+		});
+		const mode = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+		const modeStr = mode ? `${mode[0]} (${mode[1]}×)` : "—";
+
+		let statsText = `Avg: ${avg} | Max: ${max} | Min: ${min} | Mode: ${modeStr}`;
+		if (nat20s > 0) statsText += ` | 🎉 ${nat20s}×`;
+		if (nat1s > 0) statsText += ` | 💀 ${nat1s}×`;
+
+		statsEl.setText(statsText);
+	}
+
+	exportHistoryCSV() {
+		const filtered = this.getFilteredHistory();
+		if (filtered.length === 0) {
+			new Notice("No rolls to export.", 2000);
+			return;
+		}
+
+		let csv = "Die,Result,Modifier,Total,Timestamp\n";
+		for (const entry of filtered) {
+			const total = entry.result + entry.modifier;
+			csv += `${entry.die},${entry.result},${entry.modifier},${total},"${entry.timestamp}"\n`;
+		}
+
+		const blob = new Blob([csv], { type: "text/csv" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `roll-history-${new Date().toISOString().split("T")[0]}.csv`;
+		a.click();
+		URL.revokeObjectURL(url);
+		new Notice("History exported as CSV.", 2000);
+	}
+
+	copyHistoryToClipboard() {
+		const filtered = this.getFilteredHistory();
+		if (filtered.length === 0) {
+			new Notice("No rolls to copy.", 2000);
+			return;
+		}
+
+		let text = "Roll History:\n";
+		for (const entry of filtered) {
+			const modStr = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
+			const total = entry.result + entry.modifier;
+			text += `${entry.die}(${entry.result})${entry.modifier !== 0 ? modStr : ""} = ${total} [${entry.timestamp}]\n`;
+		}
+
+		navigator.clipboard.writeText(text).then(() => {
+			new Notice("History copied to clipboard.", 2000);
+		});
 	}
 
 	onClose() {
