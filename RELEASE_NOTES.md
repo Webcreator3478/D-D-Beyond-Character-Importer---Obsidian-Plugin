@@ -3,6 +3,22 @@
 ## v1.1.0
 
 ### New features
+- **Interactive Character Sheet** — a full visual character sheet opens as an overlay when you click **⚔️ Open Interactive Character Sheet** at the top of any character note. The Markdown note remains untouched underneath.
+  - **HP Tracker** — damage/heal buttons, quick ±1/5/10 adjustments, temp HP, color-coded bar, death save pips, change log
+  - **Ability Scores** — click any score card to roll that ability check (animated d20 result + toast notification)
+  - **Saving Throws** — click to roll; proficiency bonus applied automatically; proficient saves marked
+  - **Skills** — all 18 skills with correct modifiers; expertise (★) and proficiency (●) shown; click to roll
+  - **Actions & Attacks** — ATK and DMG roll buttons per weapon/cantrip; damage absorbed by temp HP correctly
+  - **Spell Slots** — interactive pips per spell level; click to use/restore; Short/Long Rest button per level; state persists in session
+  - **Spells** — expandable list grouped by level; click a spell to reveal description (from DnD Beyond data or 5etools if enabled)
+  - **Equipment** — toggle equipped/unequipped per item with visual feedback; state persists in session
+  - **Features & Traits** — expandable cards for racial traits and feats with optional 5etools description fetch
+  - **Session Notes** — inline editable text area; content saved to session storage
+  - **Roll Log** — live feed of every roll made on the sheet (d20 checks, saves, skills, attacks, damage)
+  - **Currency** — color-coded coin display (CP/SP/EP/GP/PP)
+  - **Proficiencies** — chip list of all proficiencies and languages
+- **5etools integration** (disabled by default) — configure a self-hosted 5etools base URL in settings to fetch rich descriptions for spells, items, weapons, class features, and racial traits directly in the sheet. A 📖 button appears next to each relevant entry when enabled.
+
 - **HP Tracker Modal** — persistent per-character health tracking during a session.
   - Visual HP bar (color-coded: green/yellow/red based on health %)
   - Current HP input field + quick adjust buttons (±1, ±5)
@@ -16,6 +32,10 @@
   - **Export CSV** — download roll history as a spreadsheet-ready CSV file
   - **Copy to Clipboard** — formatted history for pasting into Discord, notes, or other apps
   - **Live Statistics** — average, max, min, and mode displayed below the history. For d20 rolls, shows count of Nat 20+ (🎉) and Nat 1 (💀)
+
+### Settings changes
+- New toggle: **Enable 5etools integration** (default: off)
+- New text field: **5etools base URL** (default: `https://5e.tools`)
 
 ---
 

@@ -15,6 +15,18 @@ interface DnDBeyondImporterSettings {
 	includeEquipment: boolean;
 	includeFeatures: boolean;
 	includeBackstory: boolean;
+	// 5etools integration (disabled by default)
+	fiveEtoolsEnabled: boolean;
+	fiveEtoolsBaseUrl: string;
+}
+
+interface HPState {
+	max: number;
+	current: number;
+	temp: number;
+	dsS: number;
+	dsF: number;
+	log: string[];
 }
 
 interface DiceRoll {
@@ -181,6 +193,8 @@ const DEFAULT_SETTINGS: DnDBeyondImporterSettings = {
 	includeEquipment: true,
 	includeFeatures: true,
 	includeBackstory: true,
+	fiveEtoolsEnabled: false,
+	fiveEtoolsBaseUrl: "https://5e.tools",
 };
 
 // ─── Data helpers ─────────────────────────────────────────────────────────────
@@ -351,6 +365,12 @@ dndbeyond_id: ${char.id}
 	md += `> **${classString}** • ${raceName} • Level ${totalLevel}\n`;
 	md += `> *${background} — ${alignment}*\n\n`;
 
+	// ── Interactive Sheet Button marker (post-processor picks this up) ────────
+	md += `<div class="dnd-sheet-launcher" data-char-id="${char.id}"></div>\n\n`;
+
+	// ── HP Tracker Widget ───────────────────────────────────────────────────
+	md += buildHPTrackerWidget(char.id, hp.max, hp.current, hp.temp);
+
 	// ── Core Stats ──────────────────────────────────────────────────────────
 	md += `## Core Stats\n\n`;
 	md += `| HP | AC | Speed | Initiative | Proficiency Bonus |\n`;
@@ -413,6 +433,13 @@ dndbeyond_id: ${char.id}
 	md += `---\n*Imported from [D&D Beyond](https://www.dndbeyond.com/characters/${char.id}) — Level ${totalLevel} ${char.name ?? ""}*\n`;
 
 	return md;
+}
+
+// ─── HP Tracker Widget ────────────────────────────────────────────────────────
+// Outputs a marker <div> only — the MarkdownPostProcessor in onload() wires it up.
+
+function buildHPTrackerWidget(charId: number, maxHp: number, currentHp: number, tempHp: number): string {
+	return `<div class="dnd-hp-tracker" data-char-id="${charId}" data-max-hp="${maxHp}" data-current-hp="${currentHp}" data-temp-hp="${tempHp}"></div>\n\n`;
 }
 
 // ─── Section builders ─────────────────────────────────────────────────────────
@@ -889,6 +916,269 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new DnDBeyondSettingTab(this.app, this));
+
+		// ── HP Tracker Post-Processor ────────────────────────────────────────
+		// Finds every marker <div class="dnd-hp-tracker"> that buildMarkdown emits
+		// and replaces it with a fully wired interactive widget — no <script> needed.
+		this.registerMarkdownPostProcessor((el: HTMLElement) => {
+			el.querySelectorAll<HTMLElement>("div.dnd-hp-tracker").forEach((marker) => {
+				const charId  = marker.dataset.charId  ?? "0";
+				const maxHp   = parseInt(marker.dataset.maxHp   ?? "30", 10);
+				const initCur = parseInt(marker.dataset.currentHp ?? String(maxHp), 10);
+				const initTmp = parseInt(marker.dataset.tempHp  ?? "0",  10);
+
+				const STORE_KEY = `dnd-hp-${charId}`;
+
+				// ── Persistent state (plugin.data can't be used synchronously here,
+				//    so we use a simple in-memory Map on the plugin instance, seeded
+				//    from sessionStorage for persistence across note switches) ───────
+				const loadState = (): HPState => {
+					const raw = sessionStorage.getItem(STORE_KEY);
+					if (raw) {
+						try {
+							const s = JSON.parse(raw) as HPState;
+							s.max = maxHp; // always sync max from latest import
+							return s;
+						} catch { /* fall through */ }
+					}
+					return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
+				};
+				const saveState = (s: HPState) => sessionStorage.setItem(STORE_KEY, JSON.stringify(s));
+
+				let state = loadState();
+
+				// ── Build widget DOM ─────────────────────────────────────────────
+				const w = document.createElement("div");
+				w.style.cssText = "font-family:var(--font-interface,sans-serif);background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:10px;padding:16px 20px;margin:12px 0 20px 0;max-width:500px;";
+
+				// header
+				const hdr = w.createEl("div");
+				hdr.style.cssText = "font-size:13px;font-weight:700;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;margin-bottom:10px;";
+				hdr.setText("❤️ HP Tracker");
+
+				// bar container
+				const barWrap = w.createEl("div");
+				barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);margin-bottom:8px;";
+				const barFill = barWrap.createEl("div");
+				barFill.style.cssText = "height:100%;width:100%;background:#4ade80;transition:width .25s ease,background .25s ease;border-radius:6px;";
+				const barLbl = barWrap.createEl("div");
+				barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
+
+				// temp badge
+				const tempBadge = w.createEl("div");
+				tempBadge.style.cssText = "font-size:12px;color:var(--text-muted);text-align:right;margin-bottom:10px;min-height:16px;";
+
+				// ── render helper ────────────────────────────────────────────────
+				const render = () => {
+					const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
+					barFill.style.width = pct + "%";
+					barFill.style.background = pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444";
+					barLbl.textContent = `${state.current} / ${state.max} HP`;
+					tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
+
+					dsSuccessPips.forEach((pip, i) => {
+						pip.style.background = i < state.dsS ? "#4ade80" : "transparent";
+					});
+					dsFailurePips.forEach((pip, i) => {
+						pip.style.background = i < state.dsF ? "#ef4444" : "transparent";
+					});
+
+					logEl.empty();
+					(state.log ?? []).slice(0, 20).forEach((entry) => {
+						const row = logEl.createEl("div");
+						row.style.cssText = "padding:2px 0;border-bottom:1px solid var(--background-modifier-border);";
+						row.setText(entry);
+					});
+
+					saveState(state);
+				};
+
+				const addLog = (msg: string) => {
+					const now = new Date();
+					const t = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+					state.log = state.log ?? [];
+					state.log.unshift(`[${t}] ${msg}`);
+					if (state.log.length > 20) state.log.length = 20;
+				};
+
+				// ── Damage / Heal row ────────────────────────────────────────────
+				const dmgRow = w.createEl("div");
+				dmgRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;align-items:center;";
+
+				const amtInput = dmgRow.createEl("input") as HTMLInputElement;
+				amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
+				amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+
+				const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
+
+				const dmgBtn = dmgRow.createEl("button");
+				dmgBtn.setText("⚔️ Damage");
+				dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+				dmgBtn.addEventListener("click", () => {
+					const n = getAmt();
+					const fromTemp = Math.min(state.temp, n);
+					state.temp    = state.temp - fromTemp;
+					state.current = Math.max(0, state.current - (n - fromTemp));
+					addLog(`⚔️ −${n} dmg → ${state.current} HP`);
+					render();
+				});
+
+				const healBtn = dmgRow.createEl("button");
+				healBtn.setText("💚 Heal");
+				healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
+				healBtn.addEventListener("click", () => {
+					const n = getAmt();
+					state.current = Math.min(state.max, state.current + n);
+					addLog(`💚 +${n} heal → ${state.current} HP`);
+					render();
+				});
+
+				// ── Quick buttons ────────────────────────────────────────────────
+				const quickRow = w.createEl("div");
+				quickRow.style.cssText = "display:flex;gap:4px;margin-bottom:12px;";
+
+				const quickBtn = (label: string, delta: number) => {
+					const btn = quickRow.createEl("button");
+					btn.setText(label);
+					btn.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+					btn.addEventListener("click", () => {
+						if (delta < 0) {
+							const fromTemp = Math.min(state.temp, -delta);
+							state.temp    = state.temp - fromTemp;
+							state.current = Math.max(0, state.current - (-delta - fromTemp));
+							addLog(`⚔️ ${delta} → ${state.current} HP`);
+						} else if (delta === 0) {
+							state.current = state.max;
+							addLog(`✨ Full rest → ${state.max} HP`);
+						} else {
+							state.current = Math.min(state.max, state.current + delta);
+							addLog(`💚 +${delta} → ${state.current} HP`);
+						}
+						render();
+					});
+				};
+
+				quickBtn("−10", -10); quickBtn("−5", -5); quickBtn("−1", -1);
+				quickBtn("Full", 0);
+				quickBtn("+1", 1); quickBtn("+5", 5); quickBtn("+10", 10);
+
+				// ── Temp HP row ──────────────────────────────────────────────────
+				const tmpRow = w.createEl("div");
+				tmpRow.style.cssText = "display:flex;gap:6px;margin-bottom:12px;align-items:center;";
+				const tmpLbl = tmpRow.createEl("span");
+				tmpLbl.setText("Temp HP:");
+				tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
+
+				const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
+				tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
+				tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+
+				const setTmpBtn = tmpRow.createEl("button");
+				setTmpBtn.setText("Set");
+				setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+				setTmpBtn.addEventListener("click", () => {
+					state.temp = Math.max(0, parseInt(tmpInput.value, 10) || 0);
+					addLog(`💙 Temp HP set to ${state.temp}`);
+					render();
+				});
+
+				const clrTmpBtn = tmpRow.createEl("button");
+				clrTmpBtn.setText("Clear");
+				clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
+				clrTmpBtn.addEventListener("click", () => {
+					state.temp = 0; tmpInput.value = "0";
+					addLog("💙 Temp HP cleared");
+					render();
+				});
+
+				// ── Death Saves ──────────────────────────────────────────────────
+				const dsSection = w.createEl("div");
+				dsSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;margin-bottom:10px;";
+				const dsTitle = dsSection.createEl("div");
+				dsTitle.setText("Death Saves");
+				dsTitle.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;";
+
+				const dsRow = dsSection.createEl("div");
+				dsRow.style.cssText = "display:flex;gap:16px;align-items:center;";
+
+				const dsSuccessPips: HTMLElement[] = [];
+				const dsFailurePips: HTMLElement[] = [];
+
+				const makeDS = (color: string, pips: HTMLElement[], getCount: () => number, setCount: (n: number) => void) => {
+					const grp = dsRow.createEl("div");
+					grp.style.cssText = "display:flex;align-items:center;gap:6px;";
+					for (let i = 1; i <= 3; i++) {
+						const pip = grp.createEl("button") as HTMLElement;
+						(pip as HTMLButtonElement).style.cssText = `width:20px;height:20px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
+						const idx = i;
+						(pip as HTMLButtonElement).addEventListener("click", () => {
+							setCount(getCount() >= idx ? idx - 1 : idx);
+							render();
+						});
+						pips.push(pip);
+					}
+				};
+
+				makeDS("#4ade80", dsSuccessPips, () => state.dsS, (n) => { state.dsS = n; });
+				makeDS("#ef4444", dsFailurePips, () => state.dsF, (n) => { state.dsF = n; });
+
+				const dsReset = dsRow.createEl("button");
+				dsReset.setText("Reset");
+				dsReset.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+				dsReset.addEventListener("click", () => {
+					state.dsS = 0; state.dsF = 0;
+					addLog("🔄 Death saves reset");
+					render();
+				});
+
+				// ── Change Log ───────────────────────────────────────────────────
+				const logSection = w.createEl("div");
+				logSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;";
+				const logHeader = logSection.createEl("div");
+				logHeader.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;";
+				const logTitle = logHeader.createEl("span");
+				logTitle.setText("Change Log");
+				logTitle.style.cssText = "font-size:12px;color:var(--text-muted);font-weight:600;";
+				const clrLog = logHeader.createEl("button");
+				clrLog.setText("Clear");
+				clrLog.style.cssText = "padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+				clrLog.addEventListener("click", () => { state.log = []; render(); });
+
+				const logEl = logSection.createEl("div");
+				logEl.style.cssText = "max-height:110px;overflow-y:auto;font-size:12px;color:var(--text-muted);";
+
+				marker.replaceWith(w);
+				render();
+
+
+		// ── Character Sheet Launcher Post-Processor ───────────────────────────
+		this.registerMarkdownPostProcessor((el: HTMLElement) => {
+			el.querySelectorAll<HTMLElement>("div.dnd-sheet-launcher").forEach((marker) => {
+				const charId = marker.dataset.charId ?? "0";
+				const btn = marker.createEl("button");
+				btn.style.cssText = [
+					"display:inline-flex","align-items:center","gap:8px",
+					"background:var(--interactive-accent)","color:var(--text-on-accent)",
+					"border:none","border-radius:8px","padding:10px 20px",
+					"font-size:14px","font-weight:700","cursor:pointer",
+					"margin-bottom:16px","transition:opacity .15s",
+				].join(";");
+				btn.setText("⚔️ Open Interactive Character Sheet");
+				btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
+				btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
+				btn.addEventListener("click", () => {
+					const cached = this.charCache.get(charId);
+					if (!cached) {
+						new Notice("Import the character first so the sheet has data to display.", 3000);
+						return;
+					}
+					new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+				});
+				marker.replaceWith(btn);
+			});
+		});
+			});
+		});
 	}
 
 	async loadSettings() {
@@ -1851,6 +2141,851 @@ class DiceRollerModal extends Modal {
 	}
 }
 
+// ─── 5etools data fetcher ──────────────────────────────────────────────────────
+
+async function fetch5eData(
+	baseUrl: string,
+	type: "spells" | "items" | "classfeature" | "races",
+	name: string
+): Promise<Record<string, unknown> | null> {
+	const clean = baseUrl.replace(/\/$/, "");
+	// 5etools data lives at /data/<type>.json — we search the array by name
+	const urls: Record<string, string> = {
+		spells:       `${clean}/data/spells/spells-phb.json`,
+		items:        `${clean}/data/items.json`,
+		classfeature: `${clean}/data/classfeature.json`,
+		races:        `${clean}/data/races.json`,
+	};
+	try {
+		const resp = await requestUrl({ url: urls[type], headers: { Accept: "application/json" } });
+		if (resp.status < 200 || resp.status >= 300) return null;
+		const json = resp.json as Record<string, unknown[]>;
+		// Each file has a top-level array keyed by type name (spell, item, classFeature, race)
+		const keyMap: Record<string, string> = { spells: "spell", items: "item", classfeature: "classFeature", races: "race" };
+		const arr = json[keyMap[type]] as Array<Record<string, unknown>> | undefined;
+		if (!arr) return null;
+		const lower = name.toLowerCase();
+		return arr.find((e) => (e["name"] as string)?.toLowerCase() === lower) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function render5eDescription(entry: Record<string, unknown>): string {
+	// 5etools stores descriptions as arrays of strings or objects
+	const entries = entry["entries"] as Array<unknown> | undefined;
+	if (!entries) return entry["desc"] as string ?? "";
+	return entries.map((e) => {
+		if (typeof e === "string") return e;
+		const obj = e as Record<string, unknown>;
+		if (obj["type"] === "entries") return `**${obj["name"] ?? ""}**\n${(obj["entries"] as string[])?.join("\n") ?? ""}`;
+		if (obj["type"] === "list") return (obj["items"] as string[])?.map((i) => `• ${i}`).join("\n") ?? "";
+		if (obj["type"] === "table") {
+			const cols = obj["colLabels"] as string[] ?? [];
+			const rows = obj["rows"] as string[][] ?? [];
+			return `| ${cols.join(" | ")} |\n|${cols.map(() => "---").join("|")}|\n` +
+				rows.map((r) => `| ${r.join(" | ")} |`).join("\n");
+		}
+		return JSON.stringify(e);
+	}).join("\n\n");
+}
+
+// ─── Full Interactive Character Sheet Modal ────────────────────────────────────
+
+class FullCharacterSheetModal extends Modal {
+	plugin: DnDBeyondImporterPlugin;
+	char: DdbCharacter;
+	stats: Record<string, number>;
+	pb: number;
+	rollLog: Array<{ text: string; ts: string }> = [];
+
+	constructor(app: App, plugin: DnDBeyondImporterPlugin, char: DdbCharacter, stats: Record<string, number>, pb: number) {
+		super(app);
+		this.plugin = plugin;
+		this.char   = char;
+		this.stats  = stats;
+		this.pb     = pb;
+		// Make modal wider
+		this.modalEl.style.cssText += ";width:min(900px,95vw);max-height:92vh;overflow-y:auto;";
+	}
+
+	// ── Roll helpers ─────────────────────────────────────────────────────────
+
+	private mod(score: number): number { return Math.floor((score - 10) / 2); }
+	private modStr(n: number): string { return n >= 0 ? `+${n}` : `${n}`; }
+
+	private rollD20(modifier: number, label: string): void {
+		const raw = Math.floor(Math.random() * 20) + 1;
+		const total = raw + modifier;
+		const modStr = this.modStr(modifier);
+		const text = `🎲 ${label}: d20(${raw})${modStr} = ${total}`;
+		const isCrit = raw === 20;
+		const isFumble = raw === 1;
+		const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		this.rollLog.unshift({ text: (isCrit ? "🎉 " : isFumble ? "💀 " : "") + text, ts });
+		if (this.rollLog.length > 30) this.rollLog.length = 30;
+		this.refreshRollLog();
+		new Notice(text, 4000);
+		// Also push to plugin-wide history
+		this.plugin.rollHistory.unshift({ die: "d20", result: raw, modifier, label, timestamp: new Date().toLocaleString() });
+	}
+
+	private rollDamage(dice: string | null, bonus: number, label: string): void {
+		if (!dice) {
+			new Notice(`${label}: no damage dice`, 2000);
+			return;
+		}
+		const match = dice.match(/^(\d+)d(\d+)$/);
+		if (!match) { new Notice(`${label}: ${dice}+${bonus}`, 2000); return; }
+		let total = bonus;
+		const rolls: number[] = [];
+		const count = parseInt(match[1]);
+		const sides = parseInt(match[2]);
+		for (let i = 0; i < count; i++) {
+			const r = Math.floor(Math.random() * sides) + 1;
+			rolls.push(r);
+			total += r;
+		}
+		const bonusStr = bonus !== 0 ? (bonus >= 0 ? `+${bonus}` : `${bonus}`) : "";
+		const text = `🎲 ${label} DMG: [${rolls.join(",")}]${bonusStr} = ${total}`;
+		const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		this.rollLog.unshift({ text, ts });
+		if (this.rollLog.length > 30) this.rollLog.length = 30;
+		this.refreshRollLog();
+		new Notice(text, 4000);
+	}
+
+	private rollLogEl: HTMLElement | null = null;
+
+	private refreshRollLog(): void {
+		if (!this.rollLogEl) return;
+		this.rollLogEl.empty();
+		if (this.rollLog.length === 0) {
+			this.rollLogEl.createEl("div", { text: "No rolls yet." }).style.cssText = "color:var(--text-muted);font-size:12px;padding:4px 0;";
+			return;
+		}
+		for (const entry of this.rollLog) {
+			const row = this.rollLogEl.createEl("div");
+			row.style.cssText = "display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--background-modifier-border);font-size:12px;";
+			row.createEl("span").setText(entry.text);
+			const ts = row.createEl("span");
+			ts.setText(entry.ts);
+			ts.style.cssText = "color:var(--text-muted);margin-left:8px;white-space:nowrap;";
+		}
+	}
+
+	// ── HP state ─────────────────────────────────────────────────────────────
+
+	private loadHP(): HPState {
+		const key = `dnd-hp-${this.char.id}`;
+		try {
+			const raw = sessionStorage.getItem(key);
+			if (raw) {
+				const s = JSON.parse(raw) as HPState;
+				const hp = calcHP(this.char);
+				s.max = hp.max;
+				return s;
+			}
+		} catch { /* */ }
+		const hp = calcHP(this.char);
+		return { max: hp.max, current: hp.current, temp: hp.temp, dsS: 0, dsF: 0, log: [] };
+	}
+
+	private saveHP(s: HPState): void {
+		sessionStorage.setItem(`dnd-hp-${this.char.id}`, JSON.stringify(s));
+	}
+
+	// ── Section builders ─────────────────────────────────────────────────────
+
+	private sectionEl(parent: HTMLElement, title: string): HTMLElement {
+		const wrap = parent.createEl("div");
+		wrap.style.cssText = "margin-bottom:24px;";
+		const hdr = wrap.createEl("div");
+		hdr.style.cssText = "font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--background-modifier-border);padding-bottom:4px;margin-bottom:12px;";
+		hdr.setText(title);
+		return wrap;
+	}
+
+	private pill(parent: HTMLElement, label: string, value: string, sub?: string): void {
+		const p = parent.createEl("div");
+		p.style.cssText = "display:flex;flex-direction:column;align-items:center;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 14px;min-width:70px;";
+		const lbl = p.createEl("div");
+		lbl.setText(label);
+		lbl.style.cssText = "font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;";
+		const val = p.createEl("div");
+		val.setText(value);
+		val.style.cssText = "font-size:22px;font-weight:900;color:var(--text-normal);line-height:1.1;";
+		if (sub) {
+			const s = p.createEl("div");
+			s.setText(sub);
+			s.style.cssText = "font-size:11px;color:var(--text-muted);margin-top:2px;";
+		}
+	}
+
+	private rollBtn(parent: HTMLElement, label: string, modifier: number): HTMLButtonElement {
+		const btn = parent.createEl("button") as HTMLButtonElement;
+		btn.setText(`${this.modStr(modifier)}`);
+		btn.style.cssText = "padding:2px 8px;border-radius:4px;border:1px solid var(--interactive-accent);background:transparent;color:var(--interactive-accent);font-size:12px;font-weight:700;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;";
+		btn.addEventListener("mouseenter", () => { btn.style.background = "var(--interactive-accent)"; btn.style.color = "var(--text-on-accent)"; });
+		btn.addEventListener("mouseleave", () => { btn.style.background = "transparent"; btn.style.color = "var(--interactive-accent)"; });
+		btn.addEventListener("click", () => this.rollD20(modifier, label));
+		return btn;
+	}
+
+	// ── onOpen ───────────────────────────────────────────────────────────────
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.style.cssText = "padding:0;";
+
+		const char = this.char;
+		const stats = this.stats;
+		const pb = this.pb;
+
+		const classes: DdbClass[] = char.classes ?? [];
+		const totalLevel = calcLevel(classes);
+		const classString = classes.map((c) => `${c.definition?.name ?? "?"} ${c.level ?? 0}`).join(" / ");
+		const raceName = char.race?.fullName ?? char.race?.baseName ?? "Unknown";
+		const ac = calcAC(char, stats.dex);
+		const speed = char.race?.weightSpeeds?.normal?.walk ?? 30;
+		const initMod = this.mod(stats.dex);
+		const hpState = this.loadHP();
+
+		const allMods: DdbModifier[] = [
+			...(char.modifiers?.class ?? []),
+			...(char.modifiers?.race ?? []),
+			...(char.modifiers?.background ?? []),
+			...(char.modifiers?.feat ?? []),
+		];
+
+		// ── Layout: two columns on wide, single on narrow ────────────────────
+		const root = contentEl.createEl("div");
+		root.style.cssText = "display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr;gap:0;min-height:600px;";
+
+		const mainCol = root.createEl("div");
+		mainCol.style.cssText = "padding:20px 20px 20px 24px;overflow-y:auto;border-right:1px solid var(--background-modifier-border);";
+
+		const sideCol = root.createEl("div");
+		sideCol.style.cssText = "padding:16px;overflow-y:auto;background:var(--background-secondary);";
+
+		// ════════════════════════════════════════════════════════════════════
+		// HEADER
+		// ════════════════════════════════════════════════════════════════════
+		const header = mainCol.createEl("div");
+		header.style.cssText = "display:flex;align-items:center;gap:16px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--background-modifier-border);";
+
+		if (char.avatarUrl) {
+			const avatar = header.createEl("img") as HTMLImageElement;
+			avatar.src = char.avatarUrl;
+			avatar.style.cssText = "width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid var(--interactive-accent);flex-shrink:0;";
+		}
+
+		const headerText = header.createEl("div");
+		const nameEl = headerText.createEl("div");
+		nameEl.setText(char.name ?? "Unknown");
+		nameEl.style.cssText = "font-size:22px;font-weight:900;color:var(--text-normal);line-height:1.1;";
+		const subEl = headerText.createEl("div");
+		subEl.setText(`${classString} • ${raceName} • Level ${totalLevel}`);
+		subEl.style.cssText = "font-size:13px;color:var(--text-muted);margin-top:3px;";
+
+		const closeBtn = header.createEl("button");
+		closeBtn.setText("✕ Close");
+		closeBtn.style.cssText = "margin-left:auto;padding:6px 14px;border-radius:6px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;flex-shrink:0;";
+		closeBtn.addEventListener("click", () => this.close());
+
+		// ════════════════════════════════════════════════════════════════════
+		// CORE STATS ROW
+		// ════════════════════════════════════════════════════════════════════
+		const coreSection = this.sectionEl(mainCol, "Core Stats");
+		const coreRow = coreSection.createEl("div");
+		coreRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+		this.pill(coreRow, "HP", `${hpState.current}/${hpState.max}`, hpState.temp > 0 ? `+${hpState.temp} temp` : undefined);
+		this.pill(coreRow, "AC", String(ac));
+		this.pill(coreRow, "Speed", `${speed} ft`);
+		this.pill(coreRow, "Initiative", this.modStr(initMod));
+		this.pill(coreRow, "Prof. Bonus", `+${pb}`);
+
+		// ════════════════════════════════════════════════════════════════════
+		// HP TRACKER (inline in sheet)
+		// ════════════════════════════════════════════════════════════════════
+		const hpSection = this.sectionEl(mainCol, "HP Tracker");
+		const hpWrap = hpSection.createEl("div");
+		hpWrap.style.cssText = "display:flex;flex-direction:column;gap:8px;max-width:480px;";
+
+		// HP bar
+		const barWrap = hpWrap.createEl("div");
+		barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);";
+		const barFill = barWrap.createEl("div");
+		const barLbl = barWrap.createEl("div");
+		barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
+
+		let hpSt = { ...hpState };
+
+		const hpPills = coreRow.querySelector("div") as HTMLElement | null;
+
+		const renderHP = () => {
+			const pct = Math.max(0, Math.min(100, (hpSt.current / hpSt.max) * 100));
+			barFill.style.cssText = `height:100%;width:${pct}%;background:${pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444"};transition:width .25s ease,background .25s ease;border-radius:6px;`;
+			barLbl.setText(`${hpSt.current} / ${hpSt.max} HP${hpSt.temp > 0 ? ` (+${hpSt.temp} temp)` : ""}`);
+			// refresh core stat pill
+			const hpPillVal = coreRow.querySelector("div div:nth-child(2)") as HTMLElement | null;
+			if (hpPillVal) hpPillVal.setText(`${hpSt.current}/${hpSt.max}`);
+			// update death save pips
+			dsSPips.forEach((p, i) => { p.style.background = i < hpSt.dsS ? "#4ade80" : "transparent"; });
+			dsFPips.forEach((p, i) => { p.style.background = i < hpSt.dsF ? "#ef4444" : "transparent"; });
+			this.saveHP(hpSt);
+		};
+
+		const addHPLog = (msg: string) => {
+			const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+			hpSt.log = hpSt.log ?? [];
+			hpSt.log.unshift(`[${ts}] ${msg}`);
+			if (hpSt.log.length > 20) hpSt.log.length = 20;
+		};
+
+		// dmg/heal row
+		const dmgRow = hpWrap.createEl("div");
+		dmgRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+		const amtInput = dmgRow.createEl("input") as HTMLInputElement;
+		amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
+		amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+		const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
+
+		const dmgBtn = dmgRow.createEl("button");
+		dmgBtn.setText("⚔️ Damage"); dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+		dmgBtn.addEventListener("click", () => {
+			const n = getAmt(); const fromT = Math.min(hpSt.temp, n);
+			hpSt.temp = hpSt.temp - fromT; hpSt.current = Math.max(0, hpSt.current - (n - fromT));
+			addHPLog(`⚔️ −${n} dmg → ${hpSt.current} HP`); renderHP();
+		});
+
+		const healBtn = dmgRow.createEl("button");
+		healBtn.setText("💚 Heal"); healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
+		healBtn.addEventListener("click", () => {
+			const n = getAmt(); hpSt.current = Math.min(hpSt.max, hpSt.current + n);
+			addHPLog(`💚 +${n} heal → ${hpSt.current} HP`); renderHP();
+		});
+
+		// quick buttons
+		const quickRow = hpWrap.createEl("div");
+		quickRow.style.cssText = "display:flex;gap:4px;";
+		const qBtn = (lbl: string, d: number) => {
+			const b = quickRow.createEl("button"); b.setText(lbl);
+			b.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+			b.addEventListener("click", () => {
+				if (d < 0) { const ft = Math.min(hpSt.temp,-d); hpSt.temp-=ft; hpSt.current=Math.max(0,hpSt.current-(-d-ft)); addHPLog(`⚔️ ${d} → ${hpSt.current} HP`); }
+				else if (d === 0) { hpSt.current=hpSt.max; addHPLog(`✨ Full rest → ${hpSt.max} HP`); }
+				else { hpSt.current=Math.min(hpSt.max,hpSt.current+d); addHPLog(`💚 +${d} → ${hpSt.current} HP`); }
+				renderHP();
+			});
+		};
+		qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
+
+		// temp HP row
+		const tmpRow = hpWrap.createEl("div");
+		tmpRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+		const tmpLbl = tmpRow.createEl("span"); tmpLbl.setText("Temp HP:"); tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
+		const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
+		tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(hpSt.temp);
+		tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+		const setTmpBtn = tmpRow.createEl("button"); setTmpBtn.setText("Set"); setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+		setTmpBtn.addEventListener("click", () => { hpSt.temp = Math.max(0, parseInt(tmpInput.value,10)||0); addHPLog(`💙 Temp HP set to ${hpSt.temp}`); renderHP(); });
+		const clrTmpBtn = tmpRow.createEl("button"); clrTmpBtn.setText("Clear"); clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
+		clrTmpBtn.addEventListener("click", () => { hpSt.temp=0; tmpInput.value="0"; addHPLog("💙 Temp HP cleared"); renderHP(); });
+
+		// death saves
+		const dsSect = hpWrap.createEl("div");
+		dsSect.style.cssText = "display:flex;gap:16px;align-items:center;flex-wrap:wrap;";
+		const dsSPips: HTMLElement[] = [];
+		const dsFPips: HTMLElement[] = [];
+		const makePips = (color: string, pips: HTMLElement[], get: () => number, set: (n:number) => void) => {
+			const grp = dsSect.createEl("div"); grp.style.cssText = "display:flex;align-items:center;gap:5px;";
+			for (let i=1;i<=3;i++) {
+				const p = grp.createEl("button") as HTMLButtonElement;
+				const idx = i;
+				p.style.cssText = `width:18px;height:18px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
+				p.addEventListener("click", () => { set(get()>=idx ? idx-1 : idx); renderHP(); });
+				pips.push(p);
+			}
+		};
+		makePips("#4ade80", dsSPips, () => hpSt.dsS, (n) => { hpSt.dsS=n; });
+		makePips("#ef4444", dsFPips, () => hpSt.dsF, (n) => { hpSt.dsF=n; });
+		const dsRstBtn = dsSect.createEl("button"); dsRstBtn.setText("Reset Saves");
+		dsRstBtn.style.cssText = "padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+		dsRstBtn.addEventListener("click", () => { hpSt.dsS=0; hpSt.dsF=0; addHPLog("🔄 Death saves reset"); renderHP(); });
+
+		renderHP();
+
+		// ════════════════════════════════════════════════════════════════════
+		// ABILITY SCORES
+		// ════════════════════════════════════════════════════════════════════
+		const abilSection = this.sectionEl(mainCol, "Ability Scores");
+		const abilGrid = abilSection.createEl("div");
+		abilGrid.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+
+		const abilDefs: Array<{ key: keyof typeof stats; label: string }> = [
+			{ key: "str", label: "STR" }, { key: "dex", label: "DEX" },
+			{ key: "con", label: "CON" }, { key: "int", label: "INT" },
+			{ key: "wis", label: "WIS" }, { key: "cha", label: "CHA" },
+		];
+
+		for (const { key, label } of abilDefs) {
+			const score = stats[key];
+			const modNum = this.mod(score);
+			const card = abilGrid.createEl("div");
+			card.style.cssText = "display:flex;flex-direction:column;align-items:center;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 14px;min-width:72px;cursor:pointer;transition:border-color .15s;";
+			card.addEventListener("mouseenter", () => { card.style.borderColor = "var(--interactive-accent)"; });
+			card.addEventListener("mouseleave", () => { card.style.borderColor = "var(--background-modifier-border)"; });
+			card.addEventListener("click", () => this.rollD20(modNum, `${label} Check`));
+			const lbl = card.createEl("div"); lbl.setText(label); lbl.style.cssText = "font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;";
+			const scoreEl = card.createEl("div"); scoreEl.setText(String(score)); scoreEl.style.cssText = "font-size:22px;font-weight:900;line-height:1.1;";
+			const modEl = card.createEl("div"); modEl.setText(this.modStr(modNum)); modEl.style.cssText = "font-size:13px;color:var(--interactive-accent);font-weight:700;";
+			const hint = card.createEl("div"); hint.setText("click to roll"); hint.style.cssText = "font-size:9px;color:var(--text-faint);margin-top:2px;";
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// SAVING THROWS
+		// ════════════════════════════════════════════════════════════════════
+		const saveSection = this.sectionEl(mainCol, "Saving Throws");
+		const saveGrid = saveSection.createEl("div");
+		saveGrid.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:6px;";
+
+		const saveDefs: Array<{ key: keyof typeof stats; label: string; subType: string }> = [
+			{ key: "str", label: "Strength",     subType: "strength-saving-throws" },
+			{ key: "dex", label: "Dexterity",    subType: "dexterity-saving-throws" },
+			{ key: "con", label: "Constitution", subType: "constitution-saving-throws" },
+			{ key: "int", label: "Intelligence", subType: "intelligence-saving-throws" },
+			{ key: "wis", label: "Wisdom",       subType: "wisdom-saving-throws" },
+			{ key: "cha", label: "Charisma",     subType: "charisma-saving-throws" },
+		];
+
+		for (const { key, label, subType } of saveDefs) {
+			const isProficient = allMods.some((m) => m.type === "proficiency" && m.subType === subType);
+			const modNum = this.mod(stats[key]) + (isProficient ? pb : 0);
+			const row = saveGrid.createEl("div");
+			row.style.cssText = "display:flex;align-items:center;justify-content:space-between;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:6px;padding:6px 10px;";
+			const left = row.createEl("div"); left.style.cssText = "display:flex;align-items:center;gap:6px;";
+			const dot = left.createEl("span"); dot.setText(isProficient ? "●" : "○"); dot.style.cssText = `color:${isProficient ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;`;
+			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.style.cssText = "font-size:12px;";
+			this.rollBtn(row, `${label} Save`, modNum);
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// SKILLS
+		// ════════════════════════════════════════════════════════════════════
+		const skillSection = this.sectionEl(mainCol, "Skills");
+		const skillGrid = skillSection.createEl("div");
+		skillGrid.style.cssText = "display:grid;grid-template-columns:repeat(2,1fr);gap:5px;";
+
+		const skillDefs: Array<{ label: string; key: keyof typeof stats; subType: string }> = [
+			{ label: "Acrobatics",     key: "dex", subType: "acrobatics" },
+			{ label: "Animal Handling",key: "wis", subType: "animal-handling" },
+			{ label: "Arcana",         key: "int", subType: "arcana" },
+			{ label: "Athletics",      key: "str", subType: "athletics" },
+			{ label: "Deception",      key: "cha", subType: "deception" },
+			{ label: "History",        key: "int", subType: "history" },
+			{ label: "Insight",        key: "wis", subType: "insight" },
+			{ label: "Intimidation",   key: "cha", subType: "intimidation" },
+			{ label: "Investigation",  key: "int", subType: "investigation" },
+			{ label: "Medicine",       key: "wis", subType: "medicine" },
+			{ label: "Nature",         key: "int", subType: "nature" },
+			{ label: "Perception",     key: "wis", subType: "perception" },
+			{ label: "Performance",    key: "cha", subType: "performance" },
+			{ label: "Persuasion",     key: "cha", subType: "persuasion" },
+			{ label: "Religion",       key: "int", subType: "religion" },
+			{ label: "Sleight of Hand",key: "dex", subType: "sleight-of-hand" },
+			{ label: "Stealth",        key: "dex", subType: "stealth" },
+			{ label: "Survival",       key: "wis", subType: "survival" },
+		];
+
+		for (const { label, key, subType } of skillDefs) {
+			const isProficient = allMods.some((m) => m.type === "proficiency" && m.subType === subType);
+			const isExpertise  = allMods.some((m) => m.type === "expertise"   && m.subType === subType);
+			const bonus = this.mod(stats[key]) + (isExpertise ? pb * 2 : isProficient ? pb : 0);
+			const row = skillGrid.createEl("div");
+			row.style.cssText = "display:flex;align-items:center;justify-content:space-between;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:5px;padding:5px 8px;";
+			const left = row.createEl("div"); left.style.cssText = "display:flex;align-items:center;gap:5px;";
+			const dot = left.createEl("span");
+			dot.setText(isExpertise ? "★" : isProficient ? "●" : "○");
+			dot.style.cssText = `color:${isExpertise ? "#f59e0b" : isProficient ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;`;
+			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.style.cssText = "font-size:12px;";
+			this.rollBtn(row, `${label} Check`, bonus);
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// ACTIONS & ATTACKS
+		// ════════════════════════════════════════════════════════════════════
+		const actions = extractActions(char, stats, pb);
+		if (actions.length) {
+			const actSection = this.sectionEl(mainCol, "Actions & Attacks");
+			for (const action of actions) {
+				const row = actSection.createEl("div");
+				row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:6px;padding:8px 12px;margin-bottom:6px;";
+				const nameEl = row.createEl("span");
+				nameEl.setText(`${action.isSpell ? "✨" : "⚔️"} ${action.name}`);
+				nameEl.style.cssText = "flex:1;font-size:13px;font-weight:600;";
+				if (action.notes) {
+					const notesEl = row.createEl("span"); notesEl.setText(action.notes);
+					notesEl.style.cssText = "font-size:11px;color:var(--text-muted);";
+				}
+				if (action.attackBonus != null) {
+					const atkBtn = row.createEl("button");
+					atkBtn.setText(`🎲 ATK ${this.modStr(action.attackBonus)}`);
+					atkBtn.style.cssText = "padding:4px 10px;border-radius:5px;border:none;background:var(--interactive-accent);color:var(--text-on-accent);font-size:12px;font-weight:700;cursor:pointer;";
+					atkBtn.addEventListener("click", () => this.rollD20(action.attackBonus!, `${action.name} Attack`));
+				}
+				const hasDmg = action.damageDice != null || action.damageBonus !== 0;
+				if (hasDmg) {
+					const dmgStr = action.damageDice
+						? `${action.damageDice}${action.damageBonus !== 0 ? this.modStr(action.damageBonus) : ""}`
+						: `${action.damageBonus}`;
+					const dmgBtn = row.createEl("button");
+					dmgBtn.setText(`🎲 DMG ${dmgStr}`);
+					dmgBtn.style.cssText = "padding:4px 10px;border-radius:5px;border:none;background:#ef4444;color:#fff;font-size:12px;font-weight:700;cursor:pointer;";
+					dmgBtn.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
+
+					// 5etools weapon lookup
+					if (this.plugin.settings.fiveEtoolsEnabled) {
+						const infoBtn = row.createEl("button"); infoBtn.setText("📖");
+						infoBtn.title = "Fetch from 5etools";
+						infoBtn.style.cssText = "padding:4px 8px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
+						infoBtn.addEventListener("click", async () => {
+							infoBtn.setText("⏳"); infoBtn.disabled = true;
+							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", action.name);
+							infoBtn.setText("📖"); infoBtn.disabled = false;
+							if (!entry) { new Notice(`No 5etools entry found for "${action.name}"`, 2000); return; }
+							new FiveEDataModal(this.app, action.name, render5eDescription(entry)).open();
+						});
+					}
+				}
+			}
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// SPELL SLOTS + SPELLS
+		// ════════════════════════════════════════════════════════════════════
+		const spellSlots = char.spellSlots;
+		if (spellSlots) {
+			const slots: DdbSpellSlot[] = Array.isArray(spellSlots) ? spellSlots : Object.values(spellSlots);
+			const usefulSlots = slots.filter((s) => s.max);
+			if (usefulSlots.length) {
+				const slotSection = this.sectionEl(mainCol, "Spell Slots");
+				const slotKey = `dnd-slots-${char.id}`;
+				const loadSlots = (): Record<number, number> => {
+					try { return JSON.parse(sessionStorage.getItem(slotKey) ?? "null") ?? {}; } catch { return {}; }
+				};
+				const saveSlots = (d: Record<number, number>) => sessionStorage.setItem(slotKey, JSON.stringify(d));
+				let usedSlots: Record<number, number> = loadSlots();
+
+				for (const slot of usefulSlots) {
+					const lvl = slot.level ?? 0;
+					const maxPips = slot.max ?? 0;
+					const slotRow = slotSection.createEl("div");
+					slotRow.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:8px;";
+					const lvlLbl = slotRow.createEl("span"); lvlLbl.setText(`Level ${lvl}`);
+					lvlLbl.style.cssText = "font-size:12px;color:var(--text-muted);width:52px;flex-shrink:0;";
+					const pipsEl = slotRow.createEl("div"); pipsEl.style.cssText = "display:flex;gap:5px;";
+					const restBtn = slotRow.createEl("button"); restBtn.setText("Rest"); restBtn.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+
+					const renderPips = () => {
+						pipsEl.empty();
+						const used = usedSlots[lvl] ?? 0;
+						for (let i = 0; i < maxPips; i++) {
+							const pip = pipsEl.createEl("button") as HTMLButtonElement;
+							const isUsed = i < used;
+							pip.style.cssText = `width:18px;height:18px;border-radius:50%;border:2px solid var(--interactive-accent);background:${isUsed ? "var(--background-modifier-border)" : "var(--interactive-accent)"};cursor:pointer;transition:background .15s;`;
+							const idx = i;
+							pip.addEventListener("click", () => {
+								const cur = usedSlots[lvl] ?? 0;
+								// clicking a used pip restores it; clicking unused marks it used
+								usedSlots[lvl] = isUsed ? Math.max(0, cur - 1) : Math.min(maxPips, cur + 1);
+								saveSlots(usedSlots); renderPips();
+							});
+						}
+					};
+
+					restBtn.addEventListener("click", () => { usedSlots[lvl] = 0; saveSlots(usedSlots); renderPips(); });
+					renderPips();
+				}
+			}
+		}
+
+		// Spells list
+		const allSpells: DdbSpell[] = [];
+		if (Array.isArray(char.classSpells)) {
+			for (const cs of char.classSpells) for (const s of cs.spells ?? []) allSpells.push(s);
+		}
+		for (const src of ["race","background","feat","class","item"]) {
+			for (const s of char.spells?.[src] ?? []) allSpells.push(s);
+		}
+
+		if (allSpells.length) {
+			const spellSection = this.sectionEl(mainCol, "Spells");
+			const byLevel: Map<number, DdbSpell[]> = new Map();
+			for (const s of allSpells) {
+				const lvl = s.definition?.level ?? 0;
+				if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+				byLevel.get(lvl)!.push(s);
+			}
+			const levelNames = ["Cantrips","1st","2nd","3rd","4th","5th","6th","7th","8th","9th"];
+
+			for (const [lvl, spells] of [...byLevel.entries()].sort((a,b) => a[0]-b[0])) {
+				const lvlHdr = spellSection.createEl("div"); lvlHdr.setText(levelNames[lvl] ?? `Level ${lvl}`);
+				lvlHdr.style.cssText = "font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin:8px 0 4px 0;";
+				for (const spell of spells) {
+					const def = spell.definition; if (!def) continue;
+					const sRow = spellSection.createEl("div");
+					sRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;margin-bottom:3px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);cursor:pointer;transition:border-color .15s;";
+					sRow.addEventListener("mouseenter", () => { sRow.style.borderColor = "var(--interactive-accent)"; });
+					sRow.addEventListener("mouseleave", () => { sRow.style.borderColor = "var(--background-modifier-border)"; });
+
+					const prepDot = sRow.createEl("span"); prepDot.setText(spell.prepared ? "●" : "○");
+					prepDot.style.cssText = `color:${spell.prepared ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;flex-shrink:0;`;
+					const spellName = sRow.createEl("span"); spellName.setText(def.name ?? "Unknown");
+					spellName.style.cssText = "flex:1;font-size:13px;font-weight:600;";
+					const school = sRow.createEl("span"); school.setText(def.school ?? "");
+					school.style.cssText = "font-size:11px;color:var(--text-muted);";
+					if (def.concentration) {
+						const conc = sRow.createEl("span"); conc.setText("C"); conc.style.cssText = "font-size:10px;color:#f59e0b;font-weight:700;border:1px solid #f59e0b;border-radius:3px;padding:0 3px;";
+					}
+
+					// Expand/5etools on click
+					const descEl = spellSection.createEl("div");
+					descEl.style.cssText = "display:none;padding:8px 12px;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-top:none;border-radius:0 0 5px 5px;font-size:12px;color:var(--text-normal);white-space:pre-wrap;margin-bottom:4px;";
+					let expanded = false;
+					let fetched = false;
+
+					sRow.addEventListener("click", async () => {
+						expanded = !expanded;
+						descEl.style.display = expanded ? "block" : "none";
+						if (expanded && !fetched) {
+							fetched = true;
+							if (def.description) {
+								descEl.setText(stripHtml(def.description));
+							} else if (this.plugin.settings.fiveEtoolsEnabled) {
+								descEl.setText("⏳ Fetching from 5etools…");
+								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "spells", def.name ?? "");
+								descEl.setText(entry ? render5eDescription(entry) : "No description available.");
+							} else {
+								descEl.setText("No description available. Enable 5etools integration in settings to fetch spell descriptions.");
+							}
+						}
+					});
+				}
+			}
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// EQUIPMENT
+		// ════════════════════════════════════════════════════════════════════
+		const inventory = char.inventory ?? [];
+		if (inventory.length) {
+			const eqSection = this.sectionEl(mainCol, "Equipment");
+			const eqKey = `dnd-eq-${char.id}`;
+			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(sessionStorage.getItem(eqKey) ?? "null") ?? {}; } catch { return {}; } };
+			const saveEq = (d: Record<string, boolean>) => sessionStorage.setItem(eqKey, JSON.stringify(d));
+			let eqState: Record<string, boolean> = loadEq();
+
+			for (const item of inventory) {
+				const def = item.definition; if (!def) continue;
+				const key = (def.name ?? "unknown").toLowerCase().replace(/\s+/g, "-");
+				if (!(key in eqState)) eqState[key] = item.equipped ?? false;
+
+				const iRow = eqSection.createEl("div");
+				iRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;margin-bottom:3px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);";
+				const toggle = iRow.createEl("button") as HTMLButtonElement;
+				const renderToggle = () => {
+					toggle.setText(eqState[key] ? "⚔️" : "🎒");
+					toggle.title = eqState[key] ? "Equipped — click to unequip" : "Unequipped — click to equip";
+					iRow.style.opacity = eqState[key] ? "1" : "0.55";
+				};
+				toggle.style.cssText = "border:none;background:transparent;cursor:pointer;font-size:16px;padding:0;line-height:1;";
+				toggle.addEventListener("click", () => { eqState[key] = !eqState[key]; saveEq(eqState); renderToggle(); });
+				renderToggle();
+
+				const itemName = iRow.createEl("span"); itemName.setText(def.name ?? "Unknown");
+				itemName.style.cssText = "flex:1;font-size:13px;";
+				const qty = iRow.createEl("span"); qty.setText(`×${item.quantity ?? 1}`);
+				qty.style.cssText = "font-size:12px;color:var(--text-muted);";
+				if (def.weight) {
+					const wt = iRow.createEl("span"); wt.setText(`${def.weight} lb`);
+					wt.style.cssText = "font-size:11px;color:var(--text-faint);";
+				}
+
+				// 5etools item lookup
+				if (this.plugin.settings.fiveEtoolsEnabled) {
+					const infoBtn = iRow.createEl("button"); infoBtn.setText("📖"); infoBtn.title = "Fetch from 5etools";
+					infoBtn.style.cssText = "border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);border-radius:4px;font-size:12px;cursor:pointer;padding:2px 6px;";
+					infoBtn.addEventListener("click", async () => {
+						infoBtn.setText("⏳"); infoBtn.disabled = true;
+						const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", def.name ?? "");
+						infoBtn.setText("📖"); infoBtn.disabled = false;
+						if (!entry) { new Notice(`No 5etools entry for "${def.name}"`, 2000); return; }
+						new FiveEDataModal(this.app, def.name ?? "Item", render5eDescription(entry)).open();
+					});
+				}
+			}
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// FEATURES & TRAITS (expandable, with 5etools lookup)
+		// ════════════════════════════════════════════════════════════════════
+		const racialTraits = char.race?.racialTraits ?? [];
+		const feats: DdbFeat[] = char.feats ?? [];
+
+		if (racialTraits.length || feats.length) {
+			const featSection = this.sectionEl(mainCol, "Features & Traits");
+
+			const makeFeat = (name: string, rawDesc: string | undefined, fetchType: "classfeature" | "races") => {
+				const card = featSection.createEl("div");
+				card.style.cssText = "border:1px solid var(--background-modifier-border);border-radius:6px;margin-bottom:6px;overflow:hidden;";
+				const hdr = card.createEl("div");
+				hdr.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;background:var(--background-secondary);";
+				const _hdrSpan = hdr.createEl("span"); _hdrSpan.setText(name); _hdrSpan.style.cssText = "font-size:13px;font-weight:600;";
+				const chevron = hdr.createEl("span"); chevron.setText("▶"); chevron.style.cssText = "color:var(--text-muted);font-size:10px;transition:transform .2s;";
+
+				const body = card.createEl("div");
+				body.style.cssText = "display:none;padding:10px 12px;font-size:12px;color:var(--text-normal);white-space:pre-wrap;background:var(--background-primary);";
+
+				let expanded = false; let fetched = false;
+
+				hdr.addEventListener("click", async () => {
+					expanded = !expanded;
+					body.style.display = expanded ? "block" : "none";
+					chevron.style.transform = expanded ? "rotate(90deg)" : "none";
+					if (expanded && !fetched) {
+						fetched = true;
+						if (rawDesc) {
+							body.setText(stripHtml(rawDesc));
+						} else if (this.plugin.settings.fiveEtoolsEnabled) {
+							body.setText("⏳ Fetching from 5etools…");
+							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+							body.setText(entry ? render5eDescription(entry) : "No description available.");
+						} else {
+							body.setText("Enable 5etools integration in settings to fetch descriptions.");
+						}
+					}
+				});
+
+				if (this.plugin.settings.fiveEtoolsEnabled) {
+					const fetchBtn = hdr.createEl("button"); fetchBtn.setText("📖"); fetchBtn.title = "Refresh from 5etools";
+					fetchBtn.style.cssText = "border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 5px;margin-left:8px;";
+					fetchBtn.addEventListener("click", async (e) => {
+						e.stopPropagation();
+						fetchBtn.setText("⏳"); fetchBtn.setAttribute("disabled","");
+						const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+						fetchBtn.setText("📖"); fetchBtn.removeAttribute("disabled");
+						body.setText(entry ? render5eDescription(entry) : "No entry found.");
+						body.style.display = "block"; expanded = true; chevron.style.transform = "rotate(90deg)";
+					});
+				}
+			};
+
+			for (const t of racialTraits) {
+				if (t.definition?.name) makeFeat(t.definition.name, t.definition.description, "races");
+			}
+			for (const f of feats) {
+				if (f.definition?.name) makeFeat(f.definition.name, f.definition.description, "classfeature");
+			}
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// CLASS FEATURES (expandable, with 5etools lookup)
+		// ════════════════════════════════════════════════════════════════════
+		const classFeatureSection = this.sectionEl(mainCol, "Class Features");
+		for (const cls of char.classes ?? []) {
+			const className = cls.definition?.name ?? "Unknown";
+			const clsHdr = classFeatureSection.createEl("div"); clsHdr.setText(`${className} (Level ${cls.level ?? 0})`);
+			clsHdr.style.cssText = "font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin:6px 0 4px 0;";
+		}
+
+		// ════════════════════════════════════════════════════════════════════
+		// SESSION NOTES (editable, persisted)
+		// ════════════════════════════════════════════════════════════════════
+		const notesSection = this.sectionEl(mainCol, "Session Notes");
+		const notesKey = `dnd-notes-${char.id}`;
+		const notesArea = notesSection.createEl("textarea") as HTMLTextAreaElement;
+		notesArea.value = sessionStorage.getItem(notesKey) ?? "";
+		notesArea.placeholder = "Add your session notes here…";
+		notesArea.style.cssText = "width:100%;min-height:100px;padding:8px;border-radius:6px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:13px;font-family:var(--font-text);resize:vertical;box-sizing:border-box;";
+		notesArea.addEventListener("input", () => sessionStorage.setItem(notesKey, notesArea.value));
+
+		// ════════════════════════════════════════════════════════════════════
+		// SIDEBAR: Roll Log + Currency + Proficiencies
+		// ════════════════════════════════════════════════════════════════════
+		const rollSection = this.sectionEl(sideCol, "Roll Log");
+		const clearRollBtn = rollSection.createEl("button"); clearRollBtn.setText("Clear");
+		clearRollBtn.style.cssText = "float:right;padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;margin-top:-24px;";
+		clearRollBtn.addEventListener("click", () => { this.rollLog = []; this.refreshRollLog(); });
+		const rollLogContainer = rollSection.createEl("div");
+		rollLogContainer.style.cssText = "max-height:220px;overflow-y:auto;";
+		this.rollLogEl = rollLogContainer;
+		this.refreshRollLog();
+
+		// Currency
+		const curr = char.currencies;
+		if (curr) {
+			const currSection = this.sectionEl(sideCol, "Currency");
+			const currRow = currSection.createEl("div"); currRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
+			const coin = (lbl: string, val: number, color: string) => {
+				const c = currRow.createEl("div"); c.style.cssText = `display:flex;flex-direction:column;align-items:center;background:var(--background-primary);border:1px solid ${color};border-radius:6px;padding:6px 10px;min-width:44px;`;
+				const _cv = c.createEl("span"); _cv.setText(String(val)); _cv.style.cssText = "font-size:16px;font-weight:700;";
+				const _cl = c.createEl("span"); _cl.setText(lbl); _cl.style.cssText = `font-size:10px;color:${color};font-weight:700;`;
+			};
+			coin("CP", curr.cp ?? 0, "#a16207");
+			coin("SP", curr.sp ?? 0, "#6b7280");
+			coin("EP", curr.ep ?? 0, "#0891b2");
+			coin("GP", curr.gp ?? 0, "#d97706");
+			coin("PP", curr.pp ?? 0, "#7c3aed");
+		}
+
+		// Proficiencies & Languages
+		const profSection = this.sectionEl(sideCol, "Proficiencies & Languages");
+		const profNames = allMods
+			.filter((m) => m.type === "proficiency" && m.friendlySubtypeName)
+			.map((m) => m.friendlySubtypeName ?? "")
+			.filter((v, i, a) => v && a.indexOf(v) === i);
+		if (profNames.length) {
+			const profList = profSection.createEl("div"); profList.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+			profNames.forEach((p) => {
+				const chip = profList.createEl("span"); chip.setText(p);
+				chip.style.cssText = "background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:12px;padding:2px 8px;font-size:11px;color:var(--text-normal);";
+			});
+		}
+
+		// 5etools status badge
+		if (this.plugin.settings.fiveEtoolsEnabled) {
+			const badge = sideCol.createEl("div");
+			badge.style.cssText = "margin-top:auto;padding:8px;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:6px;font-size:11px;color:var(--text-muted);text-align:center;";
+			badge.setText(`📖 5etools: ${this.plugin.settings.fiveEtoolsBaseUrl}`);
+		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		this.rollLogEl = null;
+	}
+}
+
+// ─── 5etools Data Popup Modal ──────────────────────────────────────────────────
+
+class FiveEDataModal extends Modal {
+	title: string;
+	content: string;
+	constructor(app: App, title: string, content: string) {
+		super(app); this.title = title; this.content = content;
+	}
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: this.title });
+		const pre = this.contentEl.createEl("div");
+		pre.style.cssText = "white-space:pre-wrap;font-size:13px;color:var(--text-normal);max-height:400px;overflow-y:auto;";
+		pre.setText(this.content);
+	}
+	onClose(): void { this.contentEl.empty(); }
+}
+
+
 // ─── Settings Tab ─────────────────────────────────────────────────────────────
 
 class DnDBeyondSettingTab extends PluginSettingTab {
@@ -1922,6 +3057,32 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.includeBackstory)
 					.onChange(async (value) => {
 						this.plugin.settings.includeBackstory = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		// ── 5etools integration ─────────────────────────────────────────────────
+		new Setting(containerEl)
+			.setName("Enable 5etools integration")
+			.setDesc("Fetch rich descriptions for spells, items, class features, and racial traits from your self-hosted 5etools instance. Disabled by default.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.fiveEtoolsEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.fiveEtoolsEnabled = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("5etools base URL")
+			.setDesc("Base URL of your self-hosted 5etools instance (e.g. https://5e.tools or http://localhost:5000). Only used when the integration is enabled.")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://5e.tools")
+					.setValue(this.plugin.settings.fiveEtoolsBaseUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.fiveEtoolsBaseUrl = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
