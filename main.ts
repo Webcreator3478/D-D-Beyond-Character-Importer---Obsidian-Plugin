@@ -366,7 +366,7 @@ dndbeyond_id: ${char.id}
 	md += `> *${background} — ${alignment}*\n\n`;
 
 	// ── Interactive Sheet Button marker (post-processor picks this up) ────────
-	md += `<div class="dnd-sheet-launcher" data-char-id="${char.id}"></div>\n\n`;
+	md += `\`\`\`dnd-sheet-launcher\ncharId:${char.id}\n\`\`\`\n\n`;
 
 	// ── HP Tracker Widget ───────────────────────────────────────────────────
 	md += buildHPTrackerWidget(char.id, hp.max, hp.current, hp.temp);
@@ -439,7 +439,7 @@ dndbeyond_id: ${char.id}
 // Outputs a marker <div> only — the MarkdownPostProcessor in onload() wires it up.
 
 function buildHPTrackerWidget(charId: number, maxHp: number, currentHp: number, tempHp: number): string {
-	return `<div class="dnd-hp-tracker" data-char-id="${charId}" data-max-hp="${maxHp}" data-current-hp="${currentHp}" data-temp-hp="${tempHp}"></div>\n\n`;
+	return `\`\`\`dnd-hp-tracker\ncharId:${charId}\nmaxHp:${maxHp}\ncurrentHp:${currentHp}\ntempHp:${tempHp}\n\`\`\`\n\n`;
 }
 
 // ─── Section builders ─────────────────────────────────────────────────────────
@@ -917,266 +917,167 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 		this.addSettingTab(new DnDBeyondSettingTab(this.app, this));
 
-		// ── HP Tracker Post-Processor ────────────────────────────────────────
-		// Finds every marker <div class="dnd-hp-tracker"> that buildMarkdown emits
-		// and replaces it with a fully wired interactive widget — no <script> needed.
-		this.registerMarkdownPostProcessor((el: HTMLElement) => {
-			el.querySelectorAll<HTMLElement>("div.dnd-hp-tracker").forEach((marker) => {
-				const charId  = marker.dataset.charId  ?? "0";
-				const maxHp   = parseInt(marker.dataset.maxHp   ?? "30", 10);
-				const initCur = parseInt(marker.dataset.currentHp ?? String(maxHp), 10);
-				const initTmp = parseInt(marker.dataset.tempHp  ?? "0",  10);
+		// ── HP Tracker Code Block Processor ───────────────────────────────────
+		// Handles ```dnd-hp-tracker blocks emitted by buildHPTrackerWidget()
+		this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source, el) => {
+			const params: Record<string, string> = {};
+			for (const line of source.split("\n")) {
+				const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+			}
+			const charId  = params["charId"] ?? "0";
+			const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
+			const initCur = parseInt(params["currentHp"] ?? String(maxHp), 10);
+			const initTmp = parseInt(params["tempHp"]    ?? "0",  10);
+			const STORE_KEY = `dnd-hp-${charId}`;
 
-				const STORE_KEY = `dnd-hp-${charId}`;
-
-				// ── Persistent state (plugin.data can't be used synchronously here,
-				//    so we use a simple in-memory Map on the plugin instance, seeded
-				//    from sessionStorage for persistence across note switches) ───────
-				const loadState = (): HPState => {
+			const loadState = (): HPState => {
+				try {
 					const raw = sessionStorage.getItem(STORE_KEY);
-					if (raw) {
-						try {
-							const s = JSON.parse(raw) as HPState;
-							s.max = maxHp; // always sync max from latest import
-							return s;
-						} catch { /* fall through */ }
-					}
-					return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
-				};
-				const saveState = (s: HPState) => sessionStorage.setItem(STORE_KEY, JSON.stringify(s));
+					if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
+				} catch { /* */ }
+				return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
+			};
+			const saveState = (s: HPState) => sessionStorage.setItem(STORE_KEY, JSON.stringify(s));
+			let state = loadState();
 
-				let state = loadState();
+			const w = el.createEl("div");
+			w.style.cssText = "font-family:var(--font-interface,sans-serif);background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:10px;padding:16px 20px;margin:4px 0 16px 0;max-width:500px;";
 
-				// ── Build widget DOM ─────────────────────────────────────────────
-				const w = document.createElement("div");
-				w.style.cssText = "font-family:var(--font-interface,sans-serif);background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:10px;padding:16px 20px;margin:12px 0 20px 0;max-width:500px;";
+			const hdr = w.createEl("div"); hdr.setText("❤️ HP Tracker");
+			hdr.style.cssText = "font-size:13px;font-weight:700;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;margin-bottom:10px;";
 
-				// header
-				const hdr = w.createEl("div");
-				hdr.style.cssText = "font-size:13px;font-weight:700;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;margin-bottom:10px;";
-				hdr.setText("❤️ HP Tracker");
+			const barWrap = w.createEl("div"); barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);margin-bottom:8px;";
+			const barFill = barWrap.createEl("div"); barFill.style.cssText = "height:100%;width:100%;border-radius:6px;transition:width .25s ease,background .25s ease;";
+			const barLbl  = barWrap.createEl("div"); barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
 
-				// bar container
-				const barWrap = w.createEl("div");
-				barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);margin-bottom:8px;";
-				const barFill = barWrap.createEl("div");
-				barFill.style.cssText = "height:100%;width:100%;background:#4ade80;transition:width .25s ease,background .25s ease;border-radius:6px;";
-				const barLbl = barWrap.createEl("div");
-				barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
+			const tempBadge = w.createEl("div"); tempBadge.style.cssText = "font-size:12px;color:var(--text-muted);text-align:right;margin-bottom:10px;min-height:16px;";
 
-				// temp badge
-				const tempBadge = w.createEl("div");
-				tempBadge.style.cssText = "font-size:12px;color:var(--text-muted);text-align:right;margin-bottom:10px;min-height:16px;";
+			const dsSuccessPips: HTMLButtonElement[] = [];
+			const dsFailurePips: HTMLButtonElement[] = [];
 
-				// ── render helper ────────────────────────────────────────────────
-				const render = () => {
-					const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
-					barFill.style.width = pct + "%";
-					barFill.style.background = pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444";
-					barLbl.textContent = `${state.current} / ${state.max} HP`;
-					tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
-
-					dsSuccessPips.forEach((pip, i) => {
-						pip.style.background = i < state.dsS ? "#4ade80" : "transparent";
-					});
-					dsFailurePips.forEach((pip, i) => {
-						pip.style.background = i < state.dsF ? "#ef4444" : "transparent";
-					});
-
-					logEl.empty();
-					(state.log ?? []).slice(0, 20).forEach((entry) => {
-						const row = logEl.createEl("div");
-						row.style.cssText = "padding:2px 0;border-bottom:1px solid var(--background-modifier-border);";
-						row.setText(entry);
-					});
-
-					saveState(state);
-				};
-
-				const addLog = (msg: string) => {
-					const now = new Date();
-					const t = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-					state.log = state.log ?? [];
-					state.log.unshift(`[${t}] ${msg}`);
-					if (state.log.length > 20) state.log.length = 20;
-				};
-
-				// ── Damage / Heal row ────────────────────────────────────────────
-				const dmgRow = w.createEl("div");
-				dmgRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;align-items:center;";
-
-				const amtInput = dmgRow.createEl("input") as HTMLInputElement;
-				amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-				amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
-
-				const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
-
-				const dmgBtn = dmgRow.createEl("button");
-				dmgBtn.setText("⚔️ Damage");
-				dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
-				dmgBtn.addEventListener("click", () => {
-					const n = getAmt();
-					const fromTemp = Math.min(state.temp, n);
-					state.temp    = state.temp - fromTemp;
-					state.current = Math.max(0, state.current - (n - fromTemp));
-					addLog(`⚔️ −${n} dmg → ${state.current} HP`);
-					render();
+			const render = () => {
+				const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
+				barFill.style.width = pct + "%";
+				barFill.style.background = pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444";
+				barLbl.textContent = `${state.current} / ${state.max} HP`;
+				tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
+				dsSuccessPips.forEach((p, i) => { p.style.background = i < state.dsS ? "#4ade80" : "transparent"; });
+				dsFailurePips.forEach((p, i) => { p.style.background = i < state.dsF ? "#ef4444" : "transparent"; });
+				logEl.empty();
+				(state.log ?? []).slice(0, 20).forEach((entry) => {
+					const row = logEl.createEl("div"); row.style.cssText = "padding:2px 0;border-bottom:1px solid var(--background-modifier-border);";
+					row.setText(entry);
 				});
+				saveState(state);
+			};
 
-				const healBtn = dmgRow.createEl("button");
-				healBtn.setText("💚 Heal");
-				healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
-				healBtn.addEventListener("click", () => {
-					const n = getAmt();
-					state.current = Math.min(state.max, state.current + n);
-					addLog(`💚 +${n} heal → ${state.current} HP`);
-					render();
-				});
+			const addLog = (msg: string) => {
+				const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+				state.log = state.log ?? []; state.log.unshift(`[${t}] ${msg}`);
+				if (state.log.length > 20) state.log.length = 20;
+			};
 
-				// ── Quick buttons ────────────────────────────────────────────────
-				const quickRow = w.createEl("div");
-				quickRow.style.cssText = "display:flex;gap:4px;margin-bottom:12px;";
+			// Damage / Heal row
+			const dmgRow = w.createEl("div"); dmgRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;align-items:center;";
+			const amtInput = dmgRow.createEl("input") as HTMLInputElement;
+			amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
+			amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+			const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
 
-				const quickBtn = (label: string, delta: number) => {
-					const btn = quickRow.createEl("button");
-					btn.setText(label);
-					btn.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
-					btn.addEventListener("click", () => {
-						if (delta < 0) {
-							const fromTemp = Math.min(state.temp, -delta);
-							state.temp    = state.temp - fromTemp;
-							state.current = Math.max(0, state.current - (-delta - fromTemp));
-							addLog(`⚔️ ${delta} → ${state.current} HP`);
-						} else if (delta === 0) {
-							state.current = state.max;
-							addLog(`✨ Full rest → ${state.max} HP`);
-						} else {
-							state.current = Math.min(state.max, state.current + delta);
-							addLog(`💚 +${delta} → ${state.current} HP`);
-						}
-						render();
-					});
-				};
-
-				quickBtn("−10", -10); quickBtn("−5", -5); quickBtn("−1", -1);
-				quickBtn("Full", 0);
-				quickBtn("+1", 1); quickBtn("+5", 5); quickBtn("+10", 10);
-
-				// ── Temp HP row ──────────────────────────────────────────────────
-				const tmpRow = w.createEl("div");
-				tmpRow.style.cssText = "display:flex;gap:6px;margin-bottom:12px;align-items:center;";
-				const tmpLbl = tmpRow.createEl("span");
-				tmpLbl.setText("Temp HP:");
-				tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
-
-				const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
-				tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
-				tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
-
-				const setTmpBtn = tmpRow.createEl("button");
-				setTmpBtn.setText("Set");
-				setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
-				setTmpBtn.addEventListener("click", () => {
-					state.temp = Math.max(0, parseInt(tmpInput.value, 10) || 0);
-					addLog(`💙 Temp HP set to ${state.temp}`);
-					render();
-				});
-
-				const clrTmpBtn = tmpRow.createEl("button");
-				clrTmpBtn.setText("Clear");
-				clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
-				clrTmpBtn.addEventListener("click", () => {
-					state.temp = 0; tmpInput.value = "0";
-					addLog("💙 Temp HP cleared");
-					render();
-				});
-
-				// ── Death Saves ──────────────────────────────────────────────────
-				const dsSection = w.createEl("div");
-				dsSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;margin-bottom:10px;";
-				const dsTitle = dsSection.createEl("div");
-				dsTitle.setText("Death Saves");
-				dsTitle.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;";
-
-				const dsRow = dsSection.createEl("div");
-				dsRow.style.cssText = "display:flex;gap:16px;align-items:center;";
-
-				const dsSuccessPips: HTMLElement[] = [];
-				const dsFailurePips: HTMLElement[] = [];
-
-				const makeDS = (color: string, pips: HTMLElement[], getCount: () => number, setCount: (n: number) => void) => {
-					const grp = dsRow.createEl("div");
-					grp.style.cssText = "display:flex;align-items:center;gap:6px;";
-					for (let i = 1; i <= 3; i++) {
-						const pip = grp.createEl("button") as HTMLElement;
-						(pip as HTMLButtonElement).style.cssText = `width:20px;height:20px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
-						const idx = i;
-						(pip as HTMLButtonElement).addEventListener("click", () => {
-							setCount(getCount() >= idx ? idx - 1 : idx);
-							render();
-						});
-						pips.push(pip);
-					}
-				};
-
-				makeDS("#4ade80", dsSuccessPips, () => state.dsS, (n) => { state.dsS = n; });
-				makeDS("#ef4444", dsFailurePips, () => state.dsF, (n) => { state.dsF = n; });
-
-				const dsReset = dsRow.createEl("button");
-				dsReset.setText("Reset");
-				dsReset.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
-				dsReset.addEventListener("click", () => {
-					state.dsS = 0; state.dsF = 0;
-					addLog("🔄 Death saves reset");
-					render();
-				});
-
-				// ── Change Log ───────────────────────────────────────────────────
-				const logSection = w.createEl("div");
-				logSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;";
-				const logHeader = logSection.createEl("div");
-				logHeader.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;";
-				const logTitle = logHeader.createEl("span");
-				logTitle.setText("Change Log");
-				logTitle.style.cssText = "font-size:12px;color:var(--text-muted);font-weight:600;";
-				const clrLog = logHeader.createEl("button");
-				clrLog.setText("Clear");
-				clrLog.style.cssText = "padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
-				clrLog.addEventListener("click", () => { state.log = []; render(); });
-
-				const logEl = logSection.createEl("div");
-				logEl.style.cssText = "max-height:110px;overflow-y:auto;font-size:12px;color:var(--text-muted);";
-
-				marker.replaceWith(w);
-				render();
-
-
-		// ── Character Sheet Launcher Post-Processor ───────────────────────────
-		this.registerMarkdownPostProcessor((el: HTMLElement) => {
-			el.querySelectorAll<HTMLElement>("div.dnd-sheet-launcher").forEach((marker) => {
-				const charId = marker.dataset.charId ?? "0";
-				const btn = marker.createEl("button");
-				btn.style.cssText = [
-					"display:inline-flex","align-items:center","gap:8px",
-					"background:var(--interactive-accent)","color:var(--text-on-accent)",
-					"border:none","border-radius:8px","padding:10px 20px",
-					"font-size:14px","font-weight:700","cursor:pointer",
-					"margin-bottom:16px","transition:opacity .15s",
-				].join(";");
-				btn.setText("⚔️ Open Interactive Character Sheet");
-				btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
-				btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
-				btn.addEventListener("click", () => {
-					const cached = this.charCache.get(charId);
-					if (!cached) {
-						new Notice("Import the character first so the sheet has data to display.", 3000);
-						return;
-					}
-					new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
-				});
-				marker.replaceWith(btn);
+			const dmgBtn = dmgRow.createEl("button"); dmgBtn.setText("⚔️ Damage");
+			dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+			dmgBtn.addEventListener("click", () => {
+				const n = getAmt(); const ft = Math.min(state.temp, n);
+				state.temp -= ft; state.current = Math.max(0, state.current - (n - ft));
+				addLog(`⚔️ −${n} dmg → ${state.current} HP`); render();
 			});
+
+			const healBtn = dmgRow.createEl("button"); healBtn.setText("💚 Heal");
+			healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
+			healBtn.addEventListener("click", () => {
+				const n = getAmt(); state.current = Math.min(state.max, state.current + n);
+				addLog(`💚 +${n} heal → ${state.current} HP`); render();
+			});
+
+			// Quick buttons
+			const quickRow = w.createEl("div"); quickRow.style.cssText = "display:flex;gap:4px;margin-bottom:12px;";
+			const qBtn = (lbl: string, d: number) => {
+				const b = quickRow.createEl("button"); b.setText(lbl);
+				b.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+				b.addEventListener("click", () => {
+					if (d < 0) { const ft = Math.min(state.temp,-d); state.temp-=ft; state.current=Math.max(0,state.current-(-d-ft)); addLog(`⚔️ ${d} → ${state.current} HP`); }
+					else if (d === 0) { state.current=state.max; addLog(`✨ Full rest → ${state.max} HP`); }
+					else { state.current=Math.min(state.max,state.current+d); addLog(`💚 +${d} → ${state.current} HP`); }
+					render();
+				});
+			};
+			qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
+
+			// Temp HP
+			const tmpRow = w.createEl("div"); tmpRow.style.cssText = "display:flex;gap:6px;margin-bottom:12px;align-items:center;";
+			const tmpLbl = tmpRow.createEl("span"); tmpLbl.setText("Temp HP:"); tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
+			const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
+			tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
+			tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+			const setTmpBtn = tmpRow.createEl("button"); setTmpBtn.setText("Set");
+			setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+			setTmpBtn.addEventListener("click", () => { state.temp=Math.max(0,parseInt(tmpInput.value,10)||0); addLog(`💙 Temp HP set to ${state.temp}`); render(); });
+			const clrTmpBtn = tmpRow.createEl("button"); clrTmpBtn.setText("Clear");
+			clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
+			clrTmpBtn.addEventListener("click", () => { state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render(); });
+
+			// Death Saves
+			const dsSection = w.createEl("div"); dsSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;margin-bottom:10px;";
+			const dsTitle = dsSection.createEl("div"); dsTitle.setText("Death Saves"); dsTitle.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;";
+			const dsRow = dsSection.createEl("div"); dsRow.style.cssText = "display:flex;gap:16px;align-items:center;";
+			const makePips = (color: string, pips: HTMLButtonElement[], get: () => number, set: (n: number) => void) => {
+				const grp = dsRow.createEl("div"); grp.style.cssText = "display:flex;align-items:center;gap:6px;";
+				for (let i = 1; i <= 3; i++) {
+					const p = grp.createEl("button") as HTMLButtonElement; const idx = i;
+					p.style.cssText = `width:20px;height:20px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
+					p.addEventListener("click", () => { set(get()>=idx ? idx-1 : idx); render(); });
+					pips.push(p);
+				}
+			};
+			makePips("#4ade80", dsSuccessPips, () => state.dsS, (n) => { state.dsS=n; });
+			makePips("#ef4444", dsFailurePips, () => state.dsF, (n) => { state.dsF=n; });
+			const dsReset = dsRow.createEl("button"); dsReset.setText("Reset");
+			dsReset.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+			dsReset.addEventListener("click", () => { state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render(); });
+
+			// Change Log
+			const logSection = w.createEl("div"); logSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;";
+			const logHeader = logSection.createEl("div"); logHeader.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;";
+			const logTitle = logHeader.createEl("span"); logTitle.setText("Change Log"); logTitle.style.cssText = "font-size:12px;color:var(--text-muted);font-weight:600;";
+			const clrLog = logHeader.createEl("button"); clrLog.setText("Clear");
+			clrLog.style.cssText = "padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+			clrLog.addEventListener("click", () => { state.log=[]; render(); });
+			const logEl = logSection.createEl("div"); logEl.style.cssText = "max-height:110px;overflow-y:auto;font-size:12px;color:var(--text-muted);";
+
+			render();
 		});
+
+		// ── Character Sheet Launcher Code Block Processor ───────────────────────
+		// Handles ```dnd-sheet-launcher blocks emitted by buildMarkdown()
+		this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
+			const params: Record<string, string> = {};
+			for (const line of source.split("\n")) {
+				const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+			}
+			const charId = params["charId"] ?? "0";
+
+			const btn = el.createEl("button");
+			btn.style.cssText = "display:inline-flex;align-items:center;gap:8px;background:var(--interactive-accent);color:var(--text-on-accent);border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px;transition:opacity .15s;";
+			btn.setText("⚔️ Open Interactive Character Sheet");
+			btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
+			btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
+			btn.addEventListener("click", () => {
+				const cached = this.charCache.get(charId);
+				if (!cached) {
+					new Notice("Import the character first so the sheet has data to display.", 3000);
+					return;
+				}
+				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
 			});
 		});
 	}
