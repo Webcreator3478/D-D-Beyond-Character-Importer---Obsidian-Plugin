@@ -851,6 +851,8 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 	hpTracking: Map<string, {maxHp: number; currentHp: number; tempHp: number}> = new Map();
 	/** Per-character cache keyed by DnD Beyond character ID (string). */
 	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }> = new Map();
+	/** In-memory session state (replaces sessionStorage): HP widget state, spell slots, equipment, notes. */
+	sessionState: Map<string, string> = new Map();
 
 	async onload() {
 		await this.loadSettings();
@@ -896,12 +898,12 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 			const loadState = (): HPState => {
 				try {
-					const raw = sessionStorage.getItem(STORE_KEY);
+					const raw = this.sessionState.get(STORE_KEY);
 					if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
 				} catch { /* */ }
 				return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
 			};
-			const saveState = (s: HPState) => sessionStorage.setItem(STORE_KEY, JSON.stringify(s));
+			const saveState = (s: HPState) => this.sessionState.set(STORE_KEY, JSON.stringify(s));
 			let state = loadState();
 
 			const w = el.createEl("div");
@@ -1676,9 +1678,21 @@ class DiceRollerModal extends Modal {
 			text += `${entry.die}(${entry.result})${entry.modifier !== 0 ? modStr : ""} = ${total} [${entry.timestamp}]\n`;
 		}
 
-		navigator.clipboard.writeText(text).then(() => {
+		// Use document.execCommand for clipboard write — avoids browser clipboard API
+		const ta = document.createElement("textarea");
+		ta.value = text;
+		ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
+		document.body.appendChild(ta);
+		ta.focus();
+		ta.select();
+		try {
+			document.execCommand("copy");
 			new Notice("History copied to clipboard.", 2000);
-		});
+		} catch {
+			new Notice("Copy failed — please copy the text manually.", 3000);
+		} finally {
+			document.body.removeChild(ta);
+		}
 	}
 
 	onClose() {
@@ -1824,7 +1838,7 @@ class FullCharacterSheetModal extends Modal {
 	private loadHP(): HPState {
 		const key = `dnd-hp-${this.char.id}`;
 		try {
-			const raw = sessionStorage.getItem(key);
+			const raw = this.plugin.sessionState.get(key);
 			if (raw) {
 				const s = JSON.parse(raw) as HPState;
 				const hp = calcHP(this.char);
@@ -1837,7 +1851,7 @@ class FullCharacterSheetModal extends Modal {
 	}
 
 	private saveHP(s: HPState): void {
-		sessionStorage.setItem(`dnd-hp-${this.char.id}`, JSON.stringify(s));
+		this.plugin.sessionState.set(`dnd-hp-${this.char.id}`, JSON.stringify(s));
 	}
 
 	// ── Section builders ─────────────────────────────────────────────────────
@@ -2218,9 +2232,9 @@ class FullCharacterSheetModal extends Modal {
 				const slotSection = this.sectionEl(mainCol, "Spell Slots");
 				const slotKey = `dnd-slots-${char.id}`;
 				const loadSlots = (): Record<number, number> => {
-					try { return JSON.parse(sessionStorage.getItem(slotKey) ?? "null") ?? {}; } catch { return {}; }
+					try { return JSON.parse(this.plugin.sessionState.get(slotKey) ?? "null") ?? {}; } catch { return {}; }
 				};
-				const saveSlots = (d: Record<number, number>) => sessionStorage.setItem(slotKey, JSON.stringify(d));
+				const saveSlots = (d: Record<number, number>) => this.plugin.sessionState.set(slotKey, JSON.stringify(d));
 				let usedSlots: Record<number, number> = loadSlots();
 
 				for (const slot of usefulSlots) {
@@ -2328,8 +2342,8 @@ class FullCharacterSheetModal extends Modal {
 		if (inventory.length) {
 			const eqSection = this.sectionEl(mainCol, "Equipment");
 			const eqKey = `dnd-eq-${char.id}`;
-			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(sessionStorage.getItem(eqKey) ?? "null") ?? {}; } catch { return {}; } };
-			const saveEq = (d: Record<string, boolean>) => sessionStorage.setItem(eqKey, JSON.stringify(d));
+			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(this.plugin.sessionState.get(eqKey) ?? "null") ?? {}; } catch { return {}; } };
+			const saveEq = (d: Record<string, boolean>) => this.plugin.sessionState.set(eqKey, JSON.stringify(d));
 			let eqState: Record<string, boolean> = loadEq();
 
 			for (const item of inventory) {
@@ -2451,10 +2465,10 @@ class FullCharacterSheetModal extends Modal {
 		const notesSection = this.sectionEl(mainCol, "Session Notes");
 		const notesKey = `dnd-notes-${char.id}`;
 		const notesArea = notesSection.createEl("textarea") as HTMLTextAreaElement;
-		notesArea.value = sessionStorage.getItem(notesKey) ?? "";
+		notesArea.value = this.plugin.sessionState.get(notesKey) ?? "";
 		notesArea.placeholder = "Add your session notes here…";
 		notesArea.style.cssText = "width:100%;min-height:100px;padding:8px;border-radius:6px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:13px;font-family:var(--font-text);resize:vertical;box-sizing:border-box;";
-		notesArea.addEventListener("input", () => sessionStorage.setItem(notesKey, notesArea.value));
+		notesArea.addEventListener("input", () => this.plugin.sessionState.set(notesKey, notesArea.value));
 
 		// ════════════════════════════════════════════════════════════════════
 		// SIDEBAR: Roll Log + Currency + Proficiencies

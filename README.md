@@ -1,4 +1,4 @@
-# D&D Beyond Importer — Obsidian Plugin
+# DnD Beyond Importer
 
 Pull any **public** D&D Beyond character sheet into your Obsidian vault as a formatted Markdown note, then roll dice and run checks without ever leaving the app.
 

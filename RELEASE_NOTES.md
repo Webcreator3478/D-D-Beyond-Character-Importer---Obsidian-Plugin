@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.1.1
+
+### Bug fixes
+- Fixed README title to match the plugin name in `manifest.json` (`DnD Beyond Importer`) — required by the Obsidian community plugin checker.
+- Replaced all `sessionStorage` usage with an in-memory `Map` on the plugin instance, using Obsidian's own data lifecycle instead of browser storage APIs. Affected: HP tracker widget, spell slot pips, equipment toggle state, and session notes in the Interactive Character Sheet.
+
+---
+
 ## v1.1.0
 
 ### New features
