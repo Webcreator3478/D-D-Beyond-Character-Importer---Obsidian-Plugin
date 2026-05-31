@@ -15,7 +15,17 @@ Pull any **public** D&D Beyond character sheet into your Obsidian vault as a for
 - 🏷️ **YAML front matter** — all key stats as queryable properties for Dataview
 - 🔄 **Re-import** — running the importer again on the same character updates the existing note in place
 - 🎲 **Dice Roller** — d4 through d100 with toast notifications and roll history
-- 📊 **Roll Sheet** — per-character modal with roll buttons for every stat, skill, saving throw, and weapon attack
+- 🗺️ **Interactive Character Sheet** — full visual overlay with HP tracking, rolling, spell slots, and more
+
+---
+
+## Features & Bugs
+
+### Features
+If you want to see a feature added to this plugin, open an issue with the label **Enhancement**. If it fits the plugin's goals it will be included in the next major or minor update.
+
+### Bugs
+If you find a bug, open an issue with the label **Bug**. All bugs will be addressed as soon as possible and fixed in the next major, minor, or patch release.
 
 ---
 
@@ -25,9 +35,9 @@ Pull any **public** D&D Beyond character sheet into your Obsidian vault as a for
 1. Open Settings.
 2. In the side menu, select Community plugins.
 3. Select Browse.
-4. Search "D&D Beyond Importer".
+4. Search "DnD Beyond Importer".
 5. Select the plugin.
-6. Select install.
+6. Select Install.
 7. Enable the plugin.
 8. Configure plugin settings. (Optional)
 
@@ -39,7 +49,7 @@ Pull any **public** D&D Beyond character sheet into your Obsidian vault as a for
    <YourVault>/.obsidian/plugins/dndbeyond-importer/
    ```
    The folder needs at minimum `main.js` and `manifest.json`.
-3. Go to Obsidian → Settings → Community Plugins and enable **D&D Beyond Importer**.
+3. Go to Obsidian → Settings → Community Plugins and enable **DnD Beyond Importer**.
 
 ### Build from source
 
@@ -60,7 +70,7 @@ This produces `main.js` in the project root.
 
 **Ribbon:** click the ⚔️ sword icon in the left sidebar.
 
-**Command palette:** `Ctrl/Cmd + P` → *D&D Beyond Importer: Import character from D&D Beyond*
+**Command palette:** `Ctrl/Cmd + P` → *DnD Beyond Importer: Import character from D&D Beyond*
 
 Any of these formats work as input:
 - Full URL: `https://www.dndbeyond.com/characters/137202151/GpDg8C`
@@ -83,7 +93,7 @@ The interactive sheet includes HP tracking, ability score rolls, saving throws, 
 
 **Ribbon:** click the 🎲 dice icon in the left sidebar.
 
-**Command palette:** *D&D Beyond Importer: Open Dice Roller*
+**Command palette:** *DnD Beyond Importer: Open Dice Roller*
 
 Available dice: d4, d6, d8, d10, d12, d20, d100.
 
