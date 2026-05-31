@@ -71,32 +71,17 @@ Any of these formats work as input:
 
 ---
 
-### Character Roll Sheet
+### Interactive Character Sheet
 
-After importing, a roll sheet opens automatically. You can also reopen it at any time:
+After importing, click the **⚔️ Open Interactive Character Sheet** button at the top of any character note to open the full interactive sheet as an overlay. The Markdown note remains untouched underneath.
 
-**Ribbon:** click the 🎲 dice icon while the character note is active.
-
-**Command palette:** *D&D Beyond Importer: Open Roll Sheet for active character note*
-
-The roll sheet pulls character data from a session cache if the character was already imported this session — otherwise it fetches fresh from the API using the `dndbeyond_id` stored in the note's front matter. Multiple characters are cached independently, so switching between notes works without re-importing anyone.
-
-What's on the roll sheet:
-- **Initiative** — d20 + DEX modifier
-- **Ability Checks** — one roll button per score (STR / DEX / CON / INT / WIS / CHA)
-- **Saving Throws** — proficiency bonus applied automatically; proficient saves marked ✓
-- **Skills** — all 18 skills with correct modifiers; expertise (★) and proficiency (✓) shown
-- **Actions** — 🎲 ATK and 🎲 DMG buttons for each equipped weapon and attack cantrip
-
-Roll history logs the modifier and total alongside the raw result (e.g. `d20(14)+5 = 19`).
+The interactive sheet includes HP tracking, ability score rolls, saving throws, skills, actions & attacks, spell slots, spells, equipment, features & traits, session notes, a live roll log, currency, and proficiencies.
 
 ---
 
 ### Standalone Dice Roller
 
-If you just want to roll dice without a character sheet open:
-
-**Ribbon:** click the 🎲 dice icon with no character note active.
+**Ribbon:** click the 🎲 dice icon in the left sidebar.
 
 **Command palette:** *D&D Beyond Importer: Open Dice Roller*
 

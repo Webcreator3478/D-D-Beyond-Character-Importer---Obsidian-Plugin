@@ -24,7 +24,6 @@
   - Current HP input field + quick adjust buttons (±1, ±5)
   - Temporary HP tracking (displayed alongside current)
   - Max HP configuration (useful for level-up changes)
-  - New command: **D&D Beyond Importer: Open HP Tracker**
   - Supports multiple characters — HP tracking is keyed per character and persists across the session
 
 - **Enhanced Dice Roller** — new filtering, export, and statistics features.
@@ -32,6 +31,10 @@
   - **Export CSV** — download roll history as a spreadsheet-ready CSV file
   - **Copy to Clipboard** — formatted history for pasting into Discord, notes, or other apps
   - **Live Statistics** — average, max, min, and mode displayed below the history. For d20 rolls, shows count of Nat 20+ (🎉) and Nat 1 (💀)
+
+### Removed
+- **Character Roll Sheet** — the legacy roll sheet modal and its commands (*Open Character Roll Sheet*, *Open Roll Sheet for active character note*) and ribbon icon have been removed. All rolling is now handled by the Interactive Character Sheet, which covers the same functionality with a much richer interface.
+- **Open HP Tracker command** — removed as a standalone command. HP tracking is available directly in the Interactive Character Sheet and via the inline HP tracker widget embedded in every character note.
 
 ### Settings changes
 - New toggle: **Enable 5etools integration** (default: off)
