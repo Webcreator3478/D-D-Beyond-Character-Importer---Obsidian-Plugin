@@ -1032,18 +1032,39 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			}
 			const charId = params["charId"] ?? "0";
 
-			const btn = el.createEl("button");
-			btn.style.cssText = "display:inline-flex;align-items:center;gap:8px;background:var(--interactive-accent);color:var(--text-on-accent);border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px;transition:opacity .15s;";
-			btn.setText("⚔️ Open Interactive Character Sheet");
-			btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
-			btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
-			btn.addEventListener("click", () => {
+			const row = el.createEl("div");
+			row.style.cssText = "display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;";
+
+			const sheetBtn = row.createEl("button");
+			sheetBtn.style.cssText = "display:inline-flex;align-items:center;gap:8px;background:var(--interactive-accent);color:var(--text-on-accent);border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .15s;";
+			sheetBtn.setText("⚔️ Open Interactive Character Sheet");
+			sheetBtn.addEventListener("mouseenter", () => { sheetBtn.style.opacity = "0.85"; });
+			sheetBtn.addEventListener("mouseleave", () => { sheetBtn.style.opacity = "1"; });
+			sheetBtn.addEventListener("click", () => {
 				const cached = this.charCache.get(charId);
 				if (!cached) {
 					new Notice("Import the character first so the sheet has data to display.", 3000);
 					return;
 				}
 				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+			});
+
+			const refreshBtn = row.createEl("button");
+			refreshBtn.style.cssText = "display:inline-flex;align-items:center;gap:6px;background:var(--background-secondary);color:var(--text-normal);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s;";
+			refreshBtn.setText("🔄 Refresh from D&D Beyond");
+			refreshBtn.addEventListener("mouseenter", () => { refreshBtn.style.opacity = "0.75"; });
+			refreshBtn.addEventListener("mouseleave", () => { refreshBtn.style.opacity = "1"; });
+			refreshBtn.addEventListener("click", async () => {
+				refreshBtn.setText("⏳ Refreshing…");
+				refreshBtn.setAttribute("disabled", "true");
+				refreshBtn.style.cursor = "not-allowed";
+				try {
+					await this.importCharacter(charId);
+				} finally {
+					refreshBtn.removeAttribute("disabled");
+					refreshBtn.style.cursor = "pointer";
+					refreshBtn.setText("🔄 Refresh from D&D Beyond");
+				}
 			});
 		});
 	}
