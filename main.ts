@@ -225,6 +225,21 @@ function getStatValue(
 	return (base ?? 10) + bonus;
 }
 
+/**
+ * Returns every modifier granted to a character from all sources:
+ * class, race, background, feats, and equipped/attuned items.
+ * Use this instead of re-building the spread in every function.
+ */
+function getAllModifiers(char: DdbCharacter): DdbModifier[] {
+	return [
+		...(char.modifiers?.class ?? []),
+		...(char.modifiers?.race ?? []),
+		...(char.modifiers?.background ?? []),
+		...(char.modifiers?.feat ?? []),
+		...(char.modifiers?.item ?? []),
+	];
+}
+
 function calcHP(char: DdbCharacter, conScore: number, totalLevel: number, allMods: DdbModifier[]): { max: number; current: number; temp: number } {
 	const base = char.baseHitPoints ?? 0;
 	const bonus = char.bonusHitPoints ?? 0;
@@ -240,6 +255,9 @@ function calcHP(char: DdbCharacter, conScore: number, totalLevel: number, allMod
 	const flatHp = allMods
 		.filter((m) => m.type === "bonus" && m.subType === "hit-points" && m.value != null)
 		.reduce((sum, m) => sum + (m.value ?? 0), 0);
+	// If the user has manually overridden HP in D&D Beyond we use that value as-is.
+	// This intentionally skips Con-mod scaling, Tough/Dwarven Toughness bonuses, and
+	// flatHp — the override is the user's explicit total, not a base to add on top of.
 	const max = override != null ? override : base + bonus + conMod * totalLevel + hpPerLevel * totalLevel + flatHp;
 	return { max, current: max - removedHp, temp };
 }
@@ -270,7 +288,10 @@ function calcAC(char: DdbCharacter, dexScore: number, allStats: Record<number, n
 			}
 		}
 	}
-	// Unarmored defense: Barbarian (10+DEX+CON), Monk (10+DEX+WIS)
+	// Unarmored defense: Barbarian (10+DEX+CON), Monk (10+DEX+WIS).
+	// Shields are NOT armor (armorTypeId 4 is tracked separately as shieldBonus), so
+	// wearingArmor stays false when only a shield is equipped — allowing unarmored
+	// defense to apply. The shield bonus is still added at the end either way.
 	if (!wearingArmor) {
 		for (const m of allMods) {
 			if (m.subType === "unarmored-defense-constitution")
@@ -345,11 +366,7 @@ function buildMarkdown(
 		"strength-score": 1, "dexterity-score": 2, "constitution-score": 3,
 		"intelligence-score": 4, "wisdom-score": 5, "charisma-score": 6,
 	};
-	const allModifiers: DdbModifier[] = [
-		...(char.modifiers?.class ?? []), ...(char.modifiers?.race ?? []),
-		...(char.modifiers?.background ?? []), ...(char.modifiers?.feat ?? []),
-		...(char.modifiers?.item ?? []),
-	];
+	const allModifiers = getAllModifiers(char);
 	const modifierStatBonuses: DdbStat[] = allModifiers
 		.filter((m) => m.type === "bonus" && m.subType in statSubTypeToId && m.value != null)
 		.map((m) => ({ id: statSubTypeToId[m.subType], value: m.value! }));
@@ -511,15 +528,7 @@ function buildSavingThrows(
 		{ key: "cha", label: "CHA", subType: "charisma-saving-throws" },
 	];
 
-	const allMods: DdbModifier[] = [
-		...(char.modifiers?.class ?? []),
-		...(char.modifiers?.race ?? []),
-		...(char.modifiers?.background ?? []),
-		...(char.modifiers?.feat ?? []),
-		...(char.modifiers?.item ?? []),
-	];
-
-	const cells: string[] = statKeys.map(({ key, subType }) => {
+	const allMods = getAllModifiers(char);
 		const statVal = stats[key] ?? 10;
 		const base = Math.floor((statVal - 10) / 2);
 		const isProficient = allMods.some(
@@ -563,13 +572,7 @@ function buildSkillsSection(
 		{ name: "Survival", stat: "wis", key: "survival" },
 	];
 
-	const allMods: DdbModifier[] = [
-		...(char.modifiers?.class ?? []),
-		...(char.modifiers?.race ?? []),
-		...(char.modifiers?.background ?? []),
-		...(char.modifiers?.feat ?? []),
-		...(char.modifiers?.item ?? []),
-	];
+	const allMods = getAllModifiers(char);
 
 	let md = `## Skills\n\n`;
 	md += `| Skill | Stat | Bonus |\n`;
@@ -598,13 +601,7 @@ function buildSkillsSection(
 }
 
 function buildProficiencies(char: DdbCharacter): string {
-	const allMods: DdbModifier[] = [
-		...(char.modifiers?.race ?? []),
-		...(char.modifiers?.class ?? []),
-		...(char.modifiers?.background ?? []),
-		...(char.modifiers?.feat ?? []),
-		...(char.modifiers?.item ?? []),
-	];
+	const allMods = getAllModifiers(char);
 
 	const collect = (filterFn: (m: DdbModifier) => boolean): string[] =>
 		[
@@ -810,13 +807,7 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 	const strMod = Math.floor((stats.str - 10) / 2);
 	const dexMod = Math.floor((stats.dex - 10) / 2);
 
-	const allMods: DdbModifier[] = [
-		...(char.modifiers?.class ?? []),
-		...(char.modifiers?.race ?? []),
-		...(char.modifiers?.background ?? []),
-		...(char.modifiers?.feat ?? []),
-		...(char.modifiers?.item ?? []),
-	];
+	const allMods = getAllModifiers(char);
 	for (const item of char.inventory ?? []) {
 		const def = item.definition as (DdbDefinition & {
 			weaponBehaviors?: Array<{attackType?: number; damage?: {diceString?: string; fixedValue?: number}; properties?: Array<{name?: string}>}>;
@@ -1896,11 +1887,7 @@ class FullCharacterSheetModal extends Modal {
 		const key = `dnd-hp-${this.char.id}`;
 		const conScore = this.stats["con"] ?? 10;
 		const totalLevel = calcLevel(this.char.classes ?? []);
-		const allMods: DdbModifier[] = [
-			...(this.char.modifiers?.class ?? []), ...(this.char.modifiers?.race ?? []),
-			...(this.char.modifiers?.background ?? []), ...(this.char.modifiers?.feat ?? []),
-			...(this.char.modifiers?.item ?? []),
-		];
+		const allMods = getAllModifiers(this.char);
 		try {
 			const raw = this.plugin.sessionState.get(key);
 			if (raw) {
@@ -1970,24 +1957,14 @@ class FullCharacterSheetModal extends Modal {
 		const totalLevel = calcLevel(classes);
 		const classString = classes.map((c) => `${c.definition?.name ?? "?"} ${c.level ?? 0}`).join(" / ");
 		const raceName = char.race?.fullName ?? char.race?.baseName ?? "Unknown";
-		const sheetAllMods: DdbModifier[] = [
-			...(char.modifiers?.class ?? []), ...(char.modifiers?.race ?? []),
-			...(char.modifiers?.background ?? []), ...(char.modifiers?.feat ?? []),
-			...(char.modifiers?.item ?? []),
-		];
+		const sheetAllMods = getAllModifiers(char);
 		const sheetStatsById: Record<number, number> = { 1: stats.str, 2: stats.dex, 3: stats.con, 4: stats.int, 5: stats.wis, 6: stats.cha };
 		const ac = calcAC(char, stats.dex, sheetStatsById, sheetAllMods);
 		const speed = char.race?.weightSpeeds?.normal?.walk ?? 30;
 		const initMod = this.mod(stats.dex);
 		const hpState = this.loadHP();
 
-		const allMods: DdbModifier[] = [
-			...(char.modifiers?.class ?? []),
-			...(char.modifiers?.race ?? []),
-			...(char.modifiers?.background ?? []),
-			...(char.modifiers?.feat ?? []),
-			...(char.modifiers?.item ?? []),
-		];
+		const allMods = getAllModifiers(char);
 
 		// ── Layout: two columns on wide, single on narrow ────────────────────
 		const root = contentEl.createEl("div");
