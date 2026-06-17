@@ -13,7 +13,7 @@ Pull any **public** D&D Beyond character sheet into your Obsidian vault as a for
 - 💰 **Currency** — all coin types
 - 📜 **Backstory & Notes** — character backstory and campaign notes
 - 🏷️ **YAML front matter** — all key stats as queryable properties for Dataview
-- 🔄 **Re-import** — running the importer again on the same character updates the existing note in place
+- 🔄 **Re-import** — running the importer again on the same character updates the existing note in place, and a **Refresh** button on the note itself does the same with one click
 - 🎲 **Dice Roller** — d4 through d100 with toast notifications and roll history
 - 🗺️ **Interactive Character Sheet** — full visual overlay with HP tracking, rolling, spell slots, and more
 
@@ -48,7 +48,7 @@ If you find a bug, open an issue with the label **Bug**. All bugs will be addres
    ```
    <YourVault>/.obsidian/plugins/dndbeyond-importer/
    ```
-   The folder needs at minimum `main.js` and `manifest.json`.
+   The folder needs `main.js`, `manifest.json`, and `styles.css`.
 3. Go to Obsidian → Settings → Community Plugins and enable **DnD Beyond Importer**.
 
 ### Build from source
@@ -84,6 +84,8 @@ Any of these formats work as input:
 ### Interactive Character Sheet
 
 After importing, click the **⚔️ Open Interactive Character Sheet** button at the top of any character note to open the full interactive sheet as an overlay. The Markdown note remains untouched underneath.
+
+Next to it, the **🔄 Refresh from D&D Beyond** button re-fetches the character and updates the note in place without leaving the note — useful after leveling up or changing equipment on D&D Beyond. The button shows a brief ✅ or ❌ confirmation once the refresh finishes, and is disabled on notes that don't have a D&D Beyond character ID.
 
 The interactive sheet includes HP tracking, ability score rolls, saving throws, skills, actions & attacks, spell slots, spells, equipment, features & traits, session notes, a live roll log, currency, and proficiencies.
 
@@ -154,4 +156,4 @@ This isn't officially documented or supported by D&D Beyond / Wizards of the Coa
 
 ## License
 
-MIT 
+MIT
