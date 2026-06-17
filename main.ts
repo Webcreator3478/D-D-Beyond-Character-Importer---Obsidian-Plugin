@@ -529,6 +529,7 @@ function buildSavingThrows(
 	];
 
 	const allMods = getAllModifiers(char);
+	const cells = statKeys.map(({ key, subType }) => {
 		const statVal = stats[key] ?? 10;
 		const base = Math.floor((statVal - 10) / 2);
 		const isProficient = allMods.some(
@@ -1073,19 +1074,30 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 		// ── Character Sheet Launcher Code Block Processor ───────────────────────
 		// Handles ```dnd-sheet-launcher blocks emitted by buildMarkdown()
+		// Renders two buttons: open the interactive sheet, and refresh the
+		// character from D&D Beyond in place. All visual styling lives in
+		// styles.css (see .dndbi-launcher-row / .dndbi-sheet-btn / .dndbi-refresh-btn)
+		// rather than inline style strings.
 		this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
 			const params: Record<string, string> = {};
 			for (const line of source.split("\n")) {
 				const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
 			}
-			const charId = params["charId"] ?? "0";
+			// "0" is not a real D&D Beyond character ID — it's the fallback used when
+			// the code block has no charId at all. Treat that as "no character" rather
+			// than silently trying (and failing) to import character 0.
+			const rawCharId = params["charId"];
+			const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
 
-			const btn = el.createEl("button");
-			btn.style.cssText = "display:inline-flex;align-items:center;gap:8px;background:var(--interactive-accent);color:var(--text-on-accent);border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px;transition:opacity .15s;";
-			btn.setText("⚔️ Open Interactive Character Sheet");
-			btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
-			btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
-			btn.addEventListener("click", () => {
+			const row = el.createEl("div", { cls: "dndbi-launcher-row" });
+
+			const sheetBtn = row.createEl("button", { cls: "dndbi-sheet-btn" });
+			sheetBtn.setText("⚔️ Open Interactive Character Sheet");
+			sheetBtn.addEventListener("click", () => {
+				if (!charId) {
+					new Notice("This note has no D&D Beyond character ID.", 3000);
+					return;
+				}
 				const cached = this.charCache.get(charId);
 				if (!cached) {
 					new Notice("Import the character first so the sheet has data to display.", 3000);
@@ -1093,6 +1105,43 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 				}
 				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
 			});
+
+			const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
+			refreshBtn.setText("🔄 Refresh from D&D Beyond");
+
+			if (!charId) {
+				// No character ID on this note — refreshing would just fail confusingly,
+				// so disable the button entirely instead of attempting an import.
+				refreshBtn.disabled = true;
+				refreshBtn.title = "This note has no D&D Beyond character ID.";
+			} else {
+				refreshBtn.addEventListener("click", async () => {
+					const originalLabel = "🔄 Refresh from D&D Beyond";
+					refreshBtn.setText("⏳ Refreshing…");
+					refreshBtn.disabled = true;
+					refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
+
+					try {
+						await this.importCharacter(charId);
+						// importCharacter() already shows its own success/failure Notice,
+						// but flash the button too so the result is visible at a glance.
+						refreshBtn.setText("✅ Refreshed");
+						refreshBtn.classList.add("dndbi-flash-success");
+					} catch (e: unknown) {
+						const msg = e instanceof Error ? e.message : String(e);
+						new Notice(`❌ Refresh failed: ${msg}`, 4000);
+						refreshBtn.setText("❌ Refresh failed");
+						refreshBtn.classList.add("dndbi-flash-error");
+						console.error("[DnD Beyond Importer]", e);
+					} finally {
+						window.setTimeout(() => {
+							refreshBtn.setText(originalLabel);
+							refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
+							refreshBtn.disabled = false;
+						}, 1600);
+					}
+				});
+			}
 		});
 	}
 
@@ -1108,7 +1157,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 		const charId = extractCharacterId(url);
 		if (!charId) {
 			new Notice("❌ Could not extract a character ID from that URL.");
-			return;
+			throw new Error("Could not extract a character ID from that URL.");
 		}
 
 		new Notice(`⏳ Fetching character ${charId}…`);
@@ -1127,7 +1176,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`❌ Failed to fetch character: ${msg}`);
 			console.error("[DnD Beyond Importer]", e);
-			return;
+			throw e instanceof Error ? e : new Error(msg);
 		}
 
 		let markdown: string;
@@ -1137,7 +1186,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`❌ Failed to parse character data: ${msg}`);
 			console.error("[DnD Beyond Importer]", e);
-			return;
+			throw e instanceof Error ? e : new Error(msg);
 		}
 
 		const charName: string = data?.data?.name ?? `Character-${charId}`;
@@ -2480,9 +2529,9 @@ class FullCharacterSheetModal extends Modal {
 					fetchBtn.style.cssText = "border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 5px;margin-left:8px;";
 					fetchBtn.addEventListener("click", async (e) => {
 						e.stopPropagation();
-						fetchBtn.setText("⏳"); fetchBtn.setAttribute("disabled","");
+						fetchBtn.setText("⏳"); fetchBtn.disabled = true;
 						const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
-						fetchBtn.setText("📖"); fetchBtn.removeAttribute("disabled");
+						fetchBtn.setText("📖"); fetchBtn.disabled = false;
 						body.setText(entry ? render5eDescription(entry) : "No entry found.");
 						body.style.display = "block"; expanded = true; chevron.style.transform = "rotate(90deg)";
 					});
