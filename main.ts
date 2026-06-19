@@ -1624,7 +1624,7 @@ function render5eDescription(entry: Record<string, unknown>): string {
 class FullCharacterSheetModal extends Modal {
 	plugin: InstanceType<typeof Plugin> & {
 		rollHistory: DiceRoll[];
-		sessionState: Map<string, string>;
+		pluginState: Map<string, string>;
 		hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }>;
 		settings: { fiveEtoolsEnabled: boolean; fiveEtoolsBaseUrl: string };
 	};
@@ -1726,7 +1726,7 @@ class FullCharacterSheetModal extends Modal {
 		const totalLevel = calcLevel(this.char.classes ?? []);
 		const allMods = getAllModifiers(this.char);
 		try {
-			const raw = this.plugin.sessionState.get(key);
+			const raw = this.plugin.pluginState.get(key);
 			if (raw) {
 				const s = JSON.parse(raw) as HPState;
 				const hp = calcHP(this.char, conScore, totalLevel, allMods);
@@ -1739,7 +1739,7 @@ class FullCharacterSheetModal extends Modal {
 	}
 
 	private saveHP(s: HPState): void {
-		this.plugin.sessionState.set(`dnd-hp-${this.char.id}`, JSON.stringify(s));
+		this.plugin.pluginState.set(`dnd-hp-${this.char.id}`, JSON.stringify(s));
 	}
 
 	// ── Section builders ─────────────────────────────────────────────────────
@@ -2135,13 +2135,15 @@ class FullCharacterSheetModal extends Modal {
 				const slotKey = `dnd-slots-${char.id}`;
 				const loadSlots = (): Record<number, number> => {
 					try {
-						const parsed: Record<number, number> | null = JSON.parse(
-							this.plugin.sessionState.get(slotKey) ?? "null"
-						);
-						return parsed ?? {};
-					}catch { return {}; }
+						const raw = this.plugin.pluginState.get(slotKey) ?? "null";
+						const parsed: unknown = JSON.parse(raw);
+						if (parsed !== null && typeof parsed === "object") {
+							return parsed as Record<number, number>;
+						}
+						return {};
+					} catch { return {}; }
 				};
-				const saveSlots = (d: Record<number, number>) => this.plugin.sessionState.set(slotKey, JSON.stringify(d));
+				const saveSlots = (d: Record<number, number>) => this.plugin.pluginState.set(slotKey, JSON.stringify(d));
 				let usedSlots: Record<number, number> = loadSlots();
 
 				for (const slot of usefulSlots) {
@@ -2163,7 +2165,6 @@ class FullCharacterSheetModal extends Modal {
 							const isUsed = i < used;
 							pip.addClass("dndbi-cs-spell-pip");
 							if (isUsed) { pip.addClass("dndbi-cs-spell-pip--used"); } else { pip.removeClass("dndbi-cs-spell-pip--used"); }
-							const pipI = i;
 							pip.addEventListener("click", () => {
 								const cur = usedSlots[lvl] ?? 0;
 								usedSlots[lvl] = isUsed ? Math.max(0, cur - 1) : Math.min(maxPips, cur + 1);
@@ -2253,14 +2254,17 @@ class FullCharacterSheetModal extends Modal {
 		if (inventory.length) {
 			const eqSection = this.sectionEl(mainCol, "Equipment");
 			const eqKey = `dnd-eq-${char.id}`;
-			const loadEq = (): Record<string, boolean> => { 
+			const loadEq = (): Record<string, boolean> => {
 				try {
-					    const parsed: Record<string, boolean> | null = JSON.parse(
-							this.plugin.sessionState.get(eqKey) ?? "null"
-						);
-						return parsed ?? {};
-				} catch { return {}; } };
-			const saveEq = (d: Record<string, boolean>) => this.plugin.sessionState.set(eqKey, JSON.stringify(d));
+					const raw = this.plugin.pluginState.get(eqKey) ?? "null";
+					const parsed: unknown = JSON.parse(raw);
+					if (parsed !== null && typeof parsed === "object") {
+						return parsed as Record<string, boolean>;
+					}
+					return {};
+				} catch { return {}; }
+			};
+			const saveEq = (d: Record<string, boolean>) => this.plugin.pluginState.set(eqKey, JSON.stringify(d));
 			let eqState: Record<string, boolean> = loadEq();
 
 			for (const item of inventory) {
@@ -2390,10 +2394,10 @@ class FullCharacterSheetModal extends Modal {
 		const notesSection = this.sectionEl(mainCol, "Session Notes");
 		const notesKey = `dnd-notes-${char.id}`;
 		const notesArea = notesSection.createEl("textarea");
-		notesArea.value = this.plugin.sessionState.get(notesKey) ?? "";
+		notesArea.value = this.plugin.pluginState.get(notesKey) ?? "";
 		notesArea.placeholder = "Add your session notes here…";
 		notesArea.addClass("dndbi-cs-notes-area");
-		notesArea.addEventListener("input", () => this.plugin.sessionState.set(notesKey, notesArea.value));
+		notesArea.addEventListener("input", () => this.plugin.pluginState.set(notesKey, notesArea.value));
 
 		// ════════════════════════════════════════════════════════════════════
 		// SIDEBAR: Roll Log + Currency + Proficiencies
