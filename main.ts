@@ -957,7 +957,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	};
 
 	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
-	const amtInput = document.createElement("input");
+	const amtInput = activeDocument.createElement("input");
 	amtInput.className = "dndbi-hp-amt-input";
 	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
 	dmgRow.appendChild(amtInput);
@@ -994,7 +994,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
 	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
 	tmpLbl.setText("Temp HP:");
-	const tmpInput = document.createElement("input");
+	const tmpInput = activeDocument.createElement("input");
 	tmpInput.className = "dndbi-hp-tmp-input";
 	tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
 	tmpRow.appendChild(tmpInput);
@@ -1023,7 +1023,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	) => {
 		const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
 		for (let i = 1; i <= 3; i++) {
-			const p = document.createElement("button");
+			const p = activeDocument.createElement("button");
 			p.className = `dndbi-hp-ds-pip ${flavour}`;
 			grp.appendChild(p);
 			const idx = i;
@@ -1246,7 +1246,7 @@ class HPTrackerModal extends Modal {
 
 		const currentCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const currentInputEl = document.createElement("input");
+		const currentInputEl = activeDocument.createElement("input");
 		currentInputEl.className = "dndbi-hpmodal-number-input";
 		currentInputEl.type = "number";
 		currentInputEl.value = String(tracker!.currentHp);
@@ -1291,7 +1291,7 @@ class HPTrackerModal extends Modal {
 
 		const tempCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const tempInputEl = document.createElement("input");
+		const tempInputEl = activeDocument.createElement("input");
 		tempInputEl.className = "dndbi-hpmodal-number-input";
 		tempInputEl.type = "number";
 		tempInputEl.value = String(tracker!.tempHp);
@@ -1314,7 +1314,7 @@ class HPTrackerModal extends Modal {
 
 		const maxCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const maxInputEl = document.createElement("input");
+		const maxInputEl = activeDocument.createElement("input");
 		maxInputEl.className = "dndbi-hpmodal-number-input";
 		maxInputEl.type = "number";
 		maxInputEl.value = String(tracker!.maxHp);
@@ -2134,7 +2134,12 @@ class FullCharacterSheetModal extends Modal {
 				const slotSection = this.sectionEl(mainCol, "Spell Slots");
 				const slotKey = `dnd-slots-${char.id}`;
 				const loadSlots = (): Record<number, number> => {
-					try { return JSON.parse(this.plugin.sessionState.get(slotKey) ?? "null") as Record<number, number> ?? {}; } catch { return {}; }
+					try {
+						const parsed: Record<number, number> | null = JSON.parse(
+							this.plugin.sessionState.get(slotKey) ?? "null"
+						);
+						return parsed ?? {};
+					}catch { return {}; }
 				};
 				const saveSlots = (d: Record<number, number>) => this.plugin.sessionState.set(slotKey, JSON.stringify(d));
 				let usedSlots: Record<number, number> = loadSlots();
@@ -2248,7 +2253,13 @@ class FullCharacterSheetModal extends Modal {
 		if (inventory.length) {
 			const eqSection = this.sectionEl(mainCol, "Equipment");
 			const eqKey = `dnd-eq-${char.id}`;
-			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(this.plugin.sessionState.get(eqKey) ?? "null") as Record<string, boolean> ?? {}; } catch { return {}; } };
+			const loadEq = (): Record<string, boolean> => { 
+				try {
+					    const parsed: Record<string, boolean> | null = JSON.parse(
+							this.plugin.sessionState.get(eqKey) ?? "null"
+						);
+						return parsed ?? {};
+				} catch { return {}; } };
 			const saveEq = (d: Record<string, boolean>) => this.plugin.sessionState.set(eqKey, JSON.stringify(d));
 			let eqState: Record<string, boolean> = loadEq();
 
@@ -2378,7 +2389,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const notesSection = this.sectionEl(mainCol, "Session Notes");
 		const notesKey = `dnd-notes-${char.id}`;
-		const notesArea = notesSection.createEl("textarea") as HTMLTextAreaElement;
+		const notesArea = notesSection.createEl("textarea");
 		notesArea.value = this.plugin.sessionState.get(notesKey) ?? "";
 		notesArea.placeholder = "Add your session notes here…";
 		notesArea.addClass("dndbi-cs-notes-area");
