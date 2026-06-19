@@ -892,6 +892,7 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 }
 
 // ── HP Tracker Code Block Processor ───────────────────────────────────────
+const self = this as unknown as { sessionState: Map<string, string>; };
 this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
@@ -908,12 +909,12 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 
 	const loadState = (): HPState => {
 		try {
-			const raw = this.sessionState.get(STORE_KEY);
+			const raw = self.sessionState.get(STORE_KEY);
 			if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
 		} catch { /* */ }
 		return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
 	};
-	const saveState = (s: HPState) => this.sessionState.set(STORE_KEY, JSON.stringify(s));
+	const saveState = (s: HPState) => self.sessionState.set(STORE_KEY, JSON.stringify(s));
 	let state = loadState();
 
 	const w = el.createEl("div", { cls: "dndbi-hp-widget" });
@@ -1043,6 +1044,11 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 });
 
 // ── Character Sheet Launcher Code Block Processor ───────────────────────
+const self2 = this as unknown as {
+	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }>;
+	importCharacter: (id: string) => Promise<void>;
+	app: App;
+};
 this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
@@ -1063,12 +1069,12 @@ this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, e
 			new Notice("This note has no D&D Beyond character ID.", 3000);
 			return;
 		}
-		const cached = this.charCache.get(charId);
+		const cached = self2.charCache.get(charId);
 		if (!cached) {
 			new Notice("Import the character first so the sheet has data to display.", 3000);
 			return;
 		}
-		new FullCharacterSheetModal(this.app, this as unknown as FullCharacterSheetModal["plugin"], cached.char, cached.stats, cached.pb).open();
+		new FullCharacterSheetModal(self2.app, self2 as unknown as FullCharacterSheetModal["plugin"], cached.char, cached.stats, cached.pb).open();
 	});
 
 	const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
@@ -1084,7 +1090,7 @@ this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, e
 			refreshBtn.disabled = true;
 			refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
 
-			this.importCharacter(charId).then(() => {
+			self2.importCharacter(charId).then(() => {
 				refreshBtn.setText("✅ Refreshed");
 				refreshBtn.classList.add("dndbi-flash-success");
 			}).catch((e: unknown) => {
