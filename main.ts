@@ -957,9 +957,11 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	};
 
 	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
-	const amtInput = dmgRow.createEl<HTMLInputElement>("input", { cls: "dndbi-hp-amt-input" });
+	const amtInput = document.createElement("input");
+	amtInput.className = "dndbi-hp-amt-input";
 	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-	const getAmt = () => Math.max(0, parseInt((amtInput as HTMLInputElement).value, 10) || 0);
+	dmgRow.appendChild(amtInput);
+	const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
 
 	const dmgBtn = dmgRow.createEl("button", { cls: "dndbi-hp-dmg-btn" });
 	dmgBtn.setText("⚔️ Damage");
@@ -992,12 +994,14 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
 	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
 	tmpLbl.setText("Temp HP:");
-	const tmpInput = tmpRow.createEl<HTMLInputElement>("input", { cls: "dndbi-hp-tmp-input" });
+	const tmpInput = document.createElement("input");
+	tmpInput.className = "dndbi-hp-tmp-input";
 	tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
+	tmpRow.appendChild(tmpInput);
 	const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
 	setTmpBtn.setText("Set");
 	setTmpBtn.addEventListener("click", () => {
-		state.temp = Math.max(0, parseInt((tmpInput as HTMLInputElement).value, 10) || 0);
+		state.temp = Math.max(0, parseInt(tmpInput.value, 10) || 0);
 		addLog(`💙 Temp HP set to ${state.temp}`); render();
 	});
 	const clrTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-clr-btn" });
@@ -1019,9 +1023,11 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	) => {
 		const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
 		for (let i = 1; i <= 3; i++) {
-			const p = grp.createEl<HTMLButtonElement>("button", { cls: `dndbi-hp-ds-pip ${flavour}` });
+			const p = document.createElement("button");
+			p.className = `dndbi-hp-ds-pip ${flavour}`;
+			grp.appendChild(p);
 			const idx = i;
-			p.addEventListener("click", () => { (set as (val: number) => void)((get as () => number)() >= idx ? idx - 1 : idx); render(); });
+			p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
 			pips.push(p);
 		}
 	};
@@ -1219,11 +1225,11 @@ class HPTrackerModal extends Modal {
 		const tempEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-temp" });
 
 		const updateDisplay = () => {
-			const total = tracker.currentHp + tracker.tempHp;
-			hpTextEl.setText(`${total}/${tracker.maxHp} HP`);
-			tempEl.setText(tracker.tempHp > 0 ? `Temp: ${tracker.tempHp}` : "");
+			const total = tracker!.currentHp + tracker!.tempHp;
+			hpTextEl.setText(`${total}/${tracker!.maxHp} HP`);
+			tempEl.setText(tracker!.tempHp > 0 ? `Temp: ${tracker!.tempHp}` : "");
 
-			const newPercent = Math.max(0, (tracker.currentHp / tracker.maxHp) * 100);
+			const newPercent = Math.max(0, (tracker!.currentHp / tracker!.maxHp) * 100);
 			hpFillEl.setCssStyles({ width: `${newPercent}%` });
 			hpFillEl.removeClass("dndbi-hpmodal-bar-fill--high", "dndbi-hpmodal-bar-fill--mid", "dndbi-hpmodal-bar-fill--low");
 			if (newPercent > 50) {
@@ -1240,43 +1246,43 @@ class HPTrackerModal extends Modal {
 
 		const currentCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const currentInputEl = currentCtrlEl.createEl("input", {
-			cls: "dndbi-hpmodal-number-input",
-		});
+		const currentInputEl = document.createElement("input");
+		currentInputEl.className = "dndbi-hpmodal-number-input";
 		currentInputEl.type = "number";
-		currentInputEl.value = String(tracker.currentHp);
+		currentInputEl.value = String(tracker!.currentHp);
 		currentInputEl.min = "0";
-		currentInputEl.max = String(tracker.maxHp);
+		currentInputEl.max = String(tracker!.maxHp);
+		currentCtrlEl.appendChild(currentInputEl);
 		currentInputEl.addEventListener("change", () => {
-			tracker.currentHp = Math.max(0, Math.min(tracker.maxHp, Number(currentInputEl.value)));
+			tracker!.currentHp = Math.max(0, Math.min(tracker!.maxHp, Number(currentInputEl.value)));
 			updateDisplay();
 		});
 
 		const minusBtn = currentCtrlEl.createEl("button", { text: "−5", cls: "dndbi-hpmodal-step-btn" });
 		minusBtn.addEventListener("click", () => {
-			tracker.currentHp = Math.max(0, tracker.currentHp - 5);
-			currentInputEl.value = String(tracker.currentHp);
+			tracker!.currentHp = Math.max(0, tracker!.currentHp - 5);
+			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
 		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1", cls: "dndbi-hpmodal-step-btn" });
 		minusOneBtn.addEventListener("click", () => {
-			tracker.currentHp = Math.max(0, tracker.currentHp - 1);
-			currentInputEl.value = String(tracker.currentHp);
+			tracker!.currentHp = Math.max(0, tracker!.currentHp - 1);
+			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
 		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1", cls: "dndbi-hpmodal-step-btn" });
 		plusOneBtn.addEventListener("click", () => {
-			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 1);
-			currentInputEl.value = String(tracker.currentHp);
+			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 1);
+			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
 		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5", cls: "dndbi-hpmodal-step-btn" });
 		plusFiveBtn.addEventListener("click", () => {
-			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 5);
-			currentInputEl.value = String(tracker.currentHp);
+			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 5);
+			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
@@ -1285,20 +1291,20 @@ class HPTrackerModal extends Modal {
 
 		const tempCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const tempInputEl = tempCtrlEl.createEl("input", {
-			cls: "dndbi-hpmodal-number-input",
-		});
+		const tempInputEl = document.createElement("input");
+		tempInputEl.className = "dndbi-hpmodal-number-input";
 		tempInputEl.type = "number";
-		tempInputEl.value = String(tracker.tempHp);
+		tempInputEl.value = String(tracker!.tempHp);
 		tempInputEl.min = "0";
+		tempCtrlEl.appendChild(tempInputEl);
 		tempInputEl.addEventListener("change", () => {
-			tracker.tempHp = Math.max(0, Number(tempInputEl.value));
+			tracker!.tempHp = Math.max(0, Number(tempInputEl.value));
 			updateDisplay();
 		});
 
 		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear", cls: "dndbi-hpmodal-step-btn" });
 		tempClearBtn.addEventListener("click", () => {
-			tracker.tempHp = 0;
+			tracker!.tempHp = 0;
 			tempInputEl.value = "0";
 			updateDisplay();
 		});
@@ -1308,16 +1314,16 @@ class HPTrackerModal extends Modal {
 
 		const maxCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const maxInputEl = maxCtrlEl.createEl("input", {
-			cls: "dndbi-hpmodal-number-input",
-		});
+		const maxInputEl = document.createElement("input");
+		maxInputEl.className = "dndbi-hpmodal-number-input";
 		maxInputEl.type = "number";
-		maxInputEl.value = String(tracker.maxHp);
+		maxInputEl.value = String(tracker!.maxHp);
 		maxInputEl.min = "1";
+		maxCtrlEl.appendChild(maxInputEl);
 		maxInputEl.addEventListener("change", () => {
-			tracker.maxHp = Math.max(1, Number(maxInputEl.value));
-			tracker.currentHp = Math.min(tracker.currentHp, tracker.maxHp);
-			currentInputEl.value = String(tracker.currentHp);
+			tracker!.maxHp = Math.max(1, Number(maxInputEl.value));
+			tracker!.currentHp = Math.min(tracker!.currentHp, tracker!.maxHp);
+			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
