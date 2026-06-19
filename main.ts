@@ -892,13 +892,12 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 }
 
 // ── HP Tracker Code Block Processor ───────────────────────────────────────
-// Handles ```dnd-hp-tracker blocks emitted by buildHPTrackerWidget()
 this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
 		const parts = line.split(":");
-		const k = parts[0];
-		const v = parts[1];
+		const k = parts[0] ?? "";
+		const v = parts[1] ?? "";
 		if (k && v) params[k.trim()] = v.trim();
 	}
 	const charId  = params["charId"] ?? "0";
@@ -917,17 +916,13 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const saveState = (s: HPState) => this.sessionState.set(STORE_KEY, JSON.stringify(s));
 	let state = loadState();
 
-	// ── Widget root ───────────────────────────────────────────────────────
 	const w = el.createEl("div", { cls: "dndbi-hp-widget" });
-
 	const hdr = w.createEl("div", { cls: "dndbi-hp-header" });
 	hdr.setText("❤️ HP Tracker");
 
-	// ── HP bar ────────────────────────────────────────────────────────────
 	const barWrap = w.createEl("div", { cls: "dndbi-hp-bar-wrap" });
 	const barFill = barWrap.createEl("div", { cls: "dndbi-hp-bar-fill" });
 	const barLbl  = barWrap.createEl("div", { cls: "dndbi-hp-bar-label" });
-
 	const tempBadge = w.createEl("div", { cls: "dndbi-hp-temp-badge" });
 
 	const dsSuccessPips: HTMLButtonElement[] = [];
@@ -936,19 +931,13 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const render = () => {
 		const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
 		barFill.style.width = pct + "%";
-		// Health-level class drives the background colour declared in CSS.
-		// The width must stay inline because it is data-driven at runtime.
 		barFill.classList.toggle("is-high", pct > 50);
 		barFill.classList.toggle("is-mid",  pct > 25 && pct <= 50);
 		barFill.classList.toggle("is-low",  pct <= 25);
 		barLbl.textContent = `${state.current} / ${state.max} HP`;
 		tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
-		dsSuccessPips.forEach((p, i) => {
-			p.classList.toggle("is-filled", i < state.dsS);
-		});
-		dsFailurePips.forEach((p, i) => {
-			p.classList.toggle("is-filled", i < state.dsF);
-		});
+		dsSuccessPips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsS); });
+		dsFailurePips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsF); });
 		logEl.empty();
 		(state.log ?? []).slice(0, 20).forEach((entry) => {
 			const row = logEl.createEl("div", { cls: "dndbi-hp-log-entry" });
@@ -963,7 +952,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 		if (state.log.length > 20) state.log.length = 20;
 	};
 
-	// ── Damage / Heal row ─────────────────────────────────────────────────
 	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
 	const amtInput = dmgRow.createEl("input", { cls: "dndbi-hp-amt-input" }) as HTMLInputElement;
 	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
@@ -984,7 +972,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 		addLog(`💚 +${n} heal → ${state.current} HP`); render();
 	});
 
-	// ── Quick buttons ─────────────────────────────────────────────────────
 	const quickRow = w.createEl("div", { cls: "dndbi-hp-quick-row" });
 	const qBtn = (lbl: string, d: number) => {
 		const b = quickRow.createEl("button", { cls: "dndbi-hp-quick-btn" });
@@ -998,7 +985,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	};
 	qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
 
-	// ── Temp HP row ───────────────────────────────────────────────────────
 	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
 	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
 	tmpLbl.setText("Temp HP:");
@@ -1016,7 +1002,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 		state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render();
 	});
 
-	// ── Death Saves ───────────────────────────────────────────────────────
 	const dsSection = w.createEl("div", { cls: "dndbi-hp-ds-section" });
 	const dsTitle = dsSection.createEl("div", { cls: "dndbi-hp-ds-title" });
 	dsTitle.setText("Death Saves");
@@ -1045,7 +1030,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 		state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render();
 	});
 
-	// ── Change Log ────────────────────────────────────────────────────────
 	const logSection = w.createEl("div", { cls: "dndbi-hp-log-section" });
 	const logHeader = logSection.createEl("div", { cls: "dndbi-hp-log-header" });
 	const logTitle = logHeader.createEl("span", { cls: "dndbi-hp-log-title" });
@@ -1059,22 +1043,14 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 });
 
 // ── Character Sheet Launcher Code Block Processor ───────────────────────
-// Handles ```dnd-sheet-launcher blocks emitted by buildMarkdown()
-// Renders two buttons: open the interactive sheet, and refresh the
-// character from D&D Beyond in place. All visual styling lives in
-// styles.css (see .dndbi-launcher-row / .dndbi-sheet-btn / .dndbi-refresh-btn)
-// rather than inline style strings.
 this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
 		const parts = line.split(":");
-		const k = parts[0];
-		const v = parts[1];
+		const k = parts[0] ?? "";
+		const v = parts[1] ?? "";
 		if (k && v) params[k.trim()] = v.trim();
 	}
-	// "0" is not a real D&D Beyond character ID — it's the fallback used when
-	// the code block has no charId at all. Treat that as "no character" rather
-	// than silently trying (and failing) to import character 0.
 	const rawCharId = params["charId"];
 	const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
 
@@ -1092,15 +1068,13 @@ this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, e
 			new Notice("Import the character first so the sheet has data to display.", 3000);
 			return;
 		}
-		new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+		new FullCharacterSheetModal(this.app, this as unknown as FullCharacterSheetModal["plugin"], cached.char, cached.stats, cached.pb).open();
 	});
 
 	const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
 	refreshBtn.setText("🔄 Refresh from D&D Beyond");
 
 	if (!charId) {
-		// No character ID on this note — refreshing would just fail confusingly,
-		// so disable the button entirely instead of attempting an import.
 		refreshBtn.disabled = true;
 		refreshBtn.title = "This note has no D&D Beyond character ID.";
 	} else {
@@ -1111,8 +1085,6 @@ this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, e
 			refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
 
 			this.importCharacter(charId).then(() => {
-				// importCharacter() already shows its own success/failure Notice,
-				// but flash the button too so the result is visible at a glance.
 				refreshBtn.setText("✅ Refreshed");
 				refreshBtn.classList.add("dndbi-flash-success");
 			}).catch((e: unknown) => {
