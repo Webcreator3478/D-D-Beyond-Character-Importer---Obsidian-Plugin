@@ -893,10 +893,13 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 
 // ── HP Tracker Code Block Processor ───────────────────────────────────────
 // Handles ```dnd-hp-tracker blocks emitted by buildHPTrackerWidget()
-this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source, el) => {
+this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
-		const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+		const parts = line.split(":");
+		const k = parts[0];
+		const v = parts[1];
+		if (k && v) params[k.trim()] = v.trim();
 	}
 	const charId  = params["charId"] ?? "0";
 	const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
@@ -1061,10 +1064,13 @@ this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source, el) => {
 // character from D&D Beyond in place. All visual styling lives in
 // styles.css (see .dndbi-launcher-row / .dndbi-sheet-btn / .dndbi-refresh-btn)
 // rather than inline style strings.
-this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
+this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
-		const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+		const parts = line.split(":");
+		const k = parts[0];
+		const v = parts[1];
+		if (k && v) params[k.trim()] = v.trim();
 	}
 	// "0" is not a real D&D Beyond character ID — it's the fallback used when
 	// the code block has no charId at all. Treat that as "no character" rather
@@ -1129,10 +1135,13 @@ this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
 // ─── Import Modal ─────────────────────────────────────────────────────────────
 
 class ImportModal extends Modal {
-	plugin: DnDBeyondImporterPlugin;
+	plugin: InstanceType<typeof Plugin> & {
+		importCharacter: (url: string) => Promise<void>;
+		hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }>;
+	};
 	private urlValue = "";
 
-	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
+	constructor(app: App, plugin: ImportModal["plugin"]) {
 		super(app);
 		this.plugin = plugin;
 	}
@@ -1193,10 +1202,12 @@ class ImportModal extends Modal {
 
 
 class HPTrackerModal extends Modal {
-	plugin: DnDBeyondImporterPlugin;
+	plugin: InstanceType<typeof Plugin> & {
+		hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }>;
+	};
 	characterId: string;
 
-	constructor(app: App, plugin: DnDBeyondImporterPlugin, characterId: string) {
+	constructor(app: App, plugin: HPTrackerModal["plugin"], characterId: string) {
 		super(app);
 		this.plugin = plugin;
 		this.characterId = characterId;
@@ -1249,7 +1260,7 @@ class HPTrackerModal extends Modal {
 
 		const currentInputEl = currentCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		});
+		}) as HTMLInputElement;
 		currentInputEl.type = "number";
 		currentInputEl.value = String(tracker.currentHp);
 		currentInputEl.min = "0";
@@ -1294,7 +1305,7 @@ class HPTrackerModal extends Modal {
 
 		const tempInputEl = tempCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		});
+		}) as HTMLInputElement;
 		tempInputEl.type = "number";
 		tempInputEl.value = String(tracker.tempHp);
 		tempInputEl.min = "0";
@@ -1317,7 +1328,7 @@ class HPTrackerModal extends Modal {
 
 		const maxInputEl = maxCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		});
+		}) as HTMLInputElement;
 		maxInputEl.type = "number";
 		maxInputEl.value = String(tracker.maxHp);
 		maxInputEl.min = "1";
@@ -1340,12 +1351,14 @@ class HPTrackerModal extends Modal {
 // ─── Dice Roller Modal ────────────────────────────────────────────────────────
 
 class DiceRollerModal extends Modal {
-	plugin: DnDBeyondImporterPlugin;
+	plugin: InstanceType<typeof Plugin> & {
+		rollHistory: DiceRoll[];
+	};
 	filterDie: string | null = null;
 	private historyEl!: HTMLElement;
 	private statsEl!: HTMLElement;
 
-	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
+	constructor(app: App, plugin: DiceRollerModal["plugin"]) {
 		super(app);
 		this.plugin = plugin;
 	}
@@ -1412,7 +1425,7 @@ class DiceRollerModal extends Modal {
 
 		const filterLabel = controlsEl.createEl("label", { cls: "dndbi-dice-filter-label" });
 		filterLabel.setText("Filter:");
-		const filterSelect = filterLabel.createEl("select", { cls: "dndbi-dice-filter-select" });
+		const filterSelect = filterLabel.createEl("select", { cls: "dndbi-dice-filter-select" }) as HTMLSelectElement;
 		filterSelect.add(new Option("All dice", ""));
 		for (const die of dice) {
 			filterSelect.add(new Option(die.label, die.label));
@@ -1449,7 +1462,7 @@ class DiceRollerModal extends Modal {
 
 	getFilteredHistory(): DiceRoll[] {
 		if (!this.filterDie) return this.plugin.rollHistory;
-		return this.plugin.rollHistory.filter((r) => r.die === this.filterDie);
+		return this.plugin.rollHistory.filter((r: DiceRoll) => r.die === this.filterDie);
 	}
 
 	renderHistory() {
@@ -1485,15 +1498,15 @@ class DiceRollerModal extends Modal {
 			return;
 		}
 
-		const results = filtered.map((r) => r.result);
-		const avg = (results.reduce((a, b) => a + b, 0) / results.length).toFixed(2);
+		const results = filtered.map((r: DiceRoll) => r.result);
+		const avg = (results.reduce((a: number, b: number) => a + b, 0) / results.length).toFixed(2);
 		const max = Math.max(...results);
 		const min = Math.min(...results);
-		const nat20s = results.filter((r) => r === 20).length;
-		const nat1s  = results.filter((r) => r === 1).length;
+		const nat20s = results.filter((r: number) => r === 20).length;
+		const nat1s  = results.filter((r: number) => r === 1).length;
 
 		const freq: Record<number, number> = {};
-		results.forEach((r) => {
+		results.forEach((r: number) => {
 			freq[r] = (freq[r] ?? 0) + 1;
 		});
 		const mode = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
@@ -1621,20 +1634,29 @@ function render5eDescription(entry: Record<string, unknown>): string {
 // ─── Full Interactive Character Sheet Modal ────────────────────────────────────
 
 class FullCharacterSheetModal extends Modal {
-	plugin: DnDBeyondImporterPlugin;
+	plugin: InstanceType<typeof Plugin> & {
+		rollHistory: DiceRoll[];
+		sessionState: Map<string, string>;
+		hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }>;
+		settings: { fiveEtoolsEnabled: boolean; fiveEtoolsBaseUrl: string };
+	};
 	char: DdbCharacter;
 	stats: Record<string, number>;
 	pb: number;
 	rollLog: Array<{ text: string; ts: string }> = [];
 
-	constructor(app: App, plugin: DnDBeyondImporterPlugin, char: DdbCharacter, stats: Record<string, number>, pb: number) {
+	constructor(
+		app: App,
+		plugin: FullCharacterSheetModal["plugin"],
+		char: DdbCharacter,
+		stats: Record<string, number>,
+		pb: number,
+	) {
 		super(app);
 		this.plugin = plugin;
 		this.char   = char;
 		this.stats  = stats;
 		this.pb     = pb;
-		// Make modal wider — width/max-height are layout concerns not covered by any
-		// existing CSS class, so we use the Obsidian-sanctioned setCssStyles helper.
 		this.modalEl.setCssStyles({
 			width:     "min(900px, 95vw)",
 			maxHeight: "92vh",
@@ -2451,9 +2473,20 @@ class FiveEDataModal extends Modal {
 // ─── Settings Tab ─────────────────────────────────────────────────────────────
 
 class DnDBeyondSettingTab extends PluginSettingTab {
-	plugin: DnDBeyondImporterPlugin;
+	plugin: InstanceType<typeof Plugin> & {
+		settings: {
+			outputFolder: string;
+			includeSpells: boolean;
+			includeEquipment: boolean;
+			includeFeatures: boolean;
+			includeBackstory: boolean;
+			fiveEtoolsEnabled: boolean;
+			fiveEtoolsBaseUrl: string;
+		};
+		saveSettings: () => Promise<void>;
+	};
 
-	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
+	constructor(app: App, plugin: DnDBeyondSettingTab["plugin"]) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
