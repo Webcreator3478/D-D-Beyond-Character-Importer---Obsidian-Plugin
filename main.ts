@@ -891,349 +891,240 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 	return actions;
 }
 
-// ─── Plugin class ─────────────────────────────────────────────────────────────
+// ── HP Tracker Code Block Processor ───────────────────────────────────────
+// Handles ```dnd-hp-tracker blocks emitted by buildHPTrackerWidget()
+this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source, el) => {
+	const params: Record<string, string> = {};
+	for (const line of source.split("\n")) {
+		const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+	}
+	const charId  = params["charId"] ?? "0";
+	const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
+	const initCur = parseInt(params["currentHp"] ?? String(maxHp), 10);
+	const initTmp = parseInt(params["tempHp"]    ?? "0",  10);
+	const STORE_KEY = `dnd-hp-${charId}`;
 
-export default class DnDBeyondImporterPlugin extends Plugin {
-	settings!: DnDBeyondImporterSettings;
-	rollHistory: DiceRoll[] = [];
-	/** HP tracking state persisted across sessions. Maps character ID or note path to HP. */
-	hpTracking: Map<string, {maxHp: number; currentHp: number; tempHp: number}> = new Map();
-	/** Per-character cache keyed by DnD Beyond character ID (string). */
-	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }> = new Map();
-	/** In-memory session state (replaces sessionStorage): HP widget state, spell slots, equipment, notes. */
-	sessionState: Map<string, string> = new Map();
+	const loadState = (): HPState => {
+		try {
+			const raw = this.sessionState.get(STORE_KEY);
+			if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
+		} catch { /* */ }
+		return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
+	};
+	const saveState = (s: HPState) => this.sessionState.set(STORE_KEY, JSON.stringify(s));
+	let state = loadState();
 
-	async onload() {
-		await this.loadSettings();
+	// ── Widget root ───────────────────────────────────────────────────────
+	const w = el.createEl("div", { cls: "dndbi-hp-widget" });
 
-		this.addRibbonIcon("sword", "Import D&D Beyond Character", () => {
-			new ImportModal(this.app, this).open();
+	const hdr = w.createEl("div", { cls: "dndbi-hp-header" });
+	hdr.setText("❤️ HP Tracker");
+
+	// ── HP bar ────────────────────────────────────────────────────────────
+	const barWrap = w.createEl("div", { cls: "dndbi-hp-bar-wrap" });
+	const barFill = barWrap.createEl("div", { cls: "dndbi-hp-bar-fill" });
+	const barLbl  = barWrap.createEl("div", { cls: "dndbi-hp-bar-label" });
+
+	const tempBadge = w.createEl("div", { cls: "dndbi-hp-temp-badge" });
+
+	const dsSuccessPips: HTMLButtonElement[] = [];
+	const dsFailurePips: HTMLButtonElement[] = [];
+
+	const render = () => {
+		const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
+		barFill.style.width = pct + "%";
+		// Health-level class drives the background colour declared in CSS.
+		// The width must stay inline because it is data-driven at runtime.
+		barFill.classList.toggle("is-high", pct > 50);
+		barFill.classList.toggle("is-mid",  pct > 25 && pct <= 50);
+		barFill.classList.toggle("is-low",  pct <= 25);
+		barLbl.textContent = `${state.current} / ${state.max} HP`;
+		tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
+		dsSuccessPips.forEach((p, i) => {
+			p.classList.toggle("is-filled", i < state.dsS);
 		});
-
-		this.addRibbonIcon("dice", "Dice Roller", () => {
-			new DiceRollerModal(this.app, this).open();
+		dsFailurePips.forEach((p, i) => {
+			p.classList.toggle("is-filled", i < state.dsF);
 		});
-
-		this.addCommand({
-			id: "import-dndbeyond-character",
-			name: "Import character from D&D Beyond",
-			callback: () => {
-				new ImportModal(this.app, this).open();
-			},
+		logEl.empty();
+		(state.log ?? []).slice(0, 20).forEach((entry) => {
+			const row = logEl.createEl("div", { cls: "dndbi-hp-log-entry" });
+			row.setText(entry);
 		});
+		saveState(state);
+	};
 
-		this.addCommand({
-			id: "open-dice-roller",
-			name: "Open Dice Roller",
-			callback: () => {
-				new DiceRollerModal(this.app, this).open();
-			},
-		});
+	const addLog = (msg: string) => {
+		const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		state.log = state.log ?? []; state.log.unshift(`[${t}] ${msg}`);
+		if (state.log.length > 20) state.log.length = 20;
+	};
 
-		this.addSettingTab(new DnDBeyondSettingTab(this.app, this));
+	// ── Damage / Heal row ─────────────────────────────────────────────────
+	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
+	const amtInput = dmgRow.createEl("input", { cls: "dndbi-hp-amt-input" }) as HTMLInputElement;
+	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
+	const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
 
-		// ── HP Tracker Code Block Processor ───────────────────────────────────
-		// Handles ```dnd-hp-tracker blocks emitted by buildHPTrackerWidget()
-		this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source, el) => {
-			const params: Record<string, string> = {};
-			for (const line of source.split("\n")) {
-				const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
-			}
-			const charId  = params["charId"] ?? "0";
-			const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
-			const initCur = parseInt(params["currentHp"] ?? String(maxHp), 10);
-			const initTmp = parseInt(params["tempHp"]    ?? "0",  10);
-			const STORE_KEY = `dnd-hp-${charId}`;
+	const dmgBtn = dmgRow.createEl("button", { cls: "dndbi-hp-dmg-btn" });
+	dmgBtn.setText("⚔️ Damage");
+	dmgBtn.addEventListener("click", () => {
+		const n = getAmt(); const ft = Math.min(state.temp, n);
+		state.temp -= ft; state.current = Math.max(0, state.current - (n - ft));
+		addLog(`⚔️ −${n} dmg → ${state.current} HP`); render();
+	});
 
-			const loadState = (): HPState => {
-				try {
-					const raw = this.sessionState.get(STORE_KEY);
-					if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
-				} catch { /* */ }
-				return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
-			};
-			const saveState = (s: HPState) => this.sessionState.set(STORE_KEY, JSON.stringify(s));
-			let state = loadState();
+	const healBtn = dmgRow.createEl("button", { cls: "dndbi-hp-heal-btn" });
+	healBtn.setText("💚 Heal");
+	healBtn.addEventListener("click", () => {
+		const n = getAmt(); state.current = Math.min(state.max, state.current + n);
+		addLog(`💚 +${n} heal → ${state.current} HP`); render();
+	});
 
-			const w = el.createEl("div");
-			w.style.cssText = "font-family:var(--font-interface,sans-serif);background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:10px;padding:16px 20px;margin:4px 0 16px 0;max-width:500px;";
-
-			const hdr = w.createEl("div"); hdr.setText("❤️ HP Tracker");
-			hdr.style.cssText = "font-size:13px;font-weight:700;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;margin-bottom:10px;";
-
-			const barWrap = w.createEl("div"); barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);margin-bottom:8px;";
-			const barFill = barWrap.createEl("div"); barFill.style.cssText = "height:100%;width:100%;border-radius:6px;transition:width .25s ease,background .25s ease;";
-			const barLbl  = barWrap.createEl("div"); barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
-
-			const tempBadge = w.createEl("div"); tempBadge.style.cssText = "font-size:12px;color:var(--text-muted);text-align:right;margin-bottom:10px;min-height:16px;";
-
-			const dsSuccessPips: HTMLButtonElement[] = [];
-			const dsFailurePips: HTMLButtonElement[] = [];
-
-			const render = () => {
-				const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
-				barFill.style.width = pct + "%";
-				barFill.style.background = pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444";
-				barLbl.textContent = `${state.current} / ${state.max} HP`;
-				tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
-				dsSuccessPips.forEach((p, i) => { p.style.background = i < state.dsS ? "#4ade80" : "transparent"; });
-				dsFailurePips.forEach((p, i) => { p.style.background = i < state.dsF ? "#ef4444" : "transparent"; });
-				logEl.empty();
-				(state.log ?? []).slice(0, 20).forEach((entry) => {
-					const row = logEl.createEl("div"); row.style.cssText = "padding:2px 0;border-bottom:1px solid var(--background-modifier-border);";
-					row.setText(entry);
-				});
-				saveState(state);
-			};
-
-			const addLog = (msg: string) => {
-				const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-				state.log = state.log ?? []; state.log.unshift(`[${t}] ${msg}`);
-				if (state.log.length > 20) state.log.length = 20;
-			};
-
-			// Damage / Heal row
-			const dmgRow = w.createEl("div"); dmgRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;align-items:center;";
-			const amtInput = dmgRow.createEl("input") as HTMLInputElement;
-			amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-			amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
-			const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
-
-			const dmgBtn = dmgRow.createEl("button"); dmgBtn.setText("⚔️ Damage");
-			dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
-			dmgBtn.addEventListener("click", () => {
-				const n = getAmt(); const ft = Math.min(state.temp, n);
-				state.temp -= ft; state.current = Math.max(0, state.current - (n - ft));
-				addLog(`⚔️ −${n} dmg → ${state.current} HP`); render();
-			});
-
-			const healBtn = dmgRow.createEl("button"); healBtn.setText("💚 Heal");
-			healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
-			healBtn.addEventListener("click", () => {
-				const n = getAmt(); state.current = Math.min(state.max, state.current + n);
-				addLog(`💚 +${n} heal → ${state.current} HP`); render();
-			});
-
-			// Quick buttons
-			const quickRow = w.createEl("div"); quickRow.style.cssText = "display:flex;gap:4px;margin-bottom:12px;";
-			const qBtn = (lbl: string, d: number) => {
-				const b = quickRow.createEl("button"); b.setText(lbl);
-				b.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
-				b.addEventListener("click", () => {
-					if (d < 0) { const ft = Math.min(state.temp,-d); state.temp-=ft; state.current=Math.max(0,state.current-(-d-ft)); addLog(`⚔️ ${d} → ${state.current} HP`); }
-					else if (d === 0) { state.current=state.max; addLog(`✨ Full rest → ${state.max} HP`); }
-					else { state.current=Math.min(state.max,state.current+d); addLog(`💚 +${d} → ${state.current} HP`); }
-					render();
-				});
-			};
-			qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
-
-			// Temp HP
-			const tmpRow = w.createEl("div"); tmpRow.style.cssText = "display:flex;gap:6px;margin-bottom:12px;align-items:center;";
-			const tmpLbl = tmpRow.createEl("span"); tmpLbl.setText("Temp HP:"); tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
-			const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
-			tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
-			tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
-			const setTmpBtn = tmpRow.createEl("button"); setTmpBtn.setText("Set");
-			setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
-			setTmpBtn.addEventListener("click", () => { state.temp=Math.max(0,parseInt(tmpInput.value,10)||0); addLog(`💙 Temp HP set to ${state.temp}`); render(); });
-			const clrTmpBtn = tmpRow.createEl("button"); clrTmpBtn.setText("Clear");
-			clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
-			clrTmpBtn.addEventListener("click", () => { state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render(); });
-
-			// Death Saves
-			const dsSection = w.createEl("div"); dsSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;margin-bottom:10px;";
-			const dsTitle = dsSection.createEl("div"); dsTitle.setText("Death Saves"); dsTitle.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;";
-			const dsRow = dsSection.createEl("div"); dsRow.style.cssText = "display:flex;gap:16px;align-items:center;";
-			const makePips = (color: string, pips: HTMLButtonElement[], get: () => number, set: (n: number) => void) => {
-				const grp = dsRow.createEl("div"); grp.style.cssText = "display:flex;align-items:center;gap:6px;";
-				for (let i = 1; i <= 3; i++) {
-					const p = grp.createEl("button") as HTMLButtonElement; const idx = i;
-					p.style.cssText = `width:20px;height:20px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
-					p.addEventListener("click", () => { set(get()>=idx ? idx-1 : idx); render(); });
-					pips.push(p);
-				}
-			};
-			makePips("#4ade80", dsSuccessPips, () => state.dsS, (n) => { state.dsS=n; });
-			makePips("#ef4444", dsFailurePips, () => state.dsF, (n) => { state.dsF=n; });
-			const dsReset = dsRow.createEl("button"); dsReset.setText("Reset");
-			dsReset.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
-			dsReset.addEventListener("click", () => { state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render(); });
-
-			// Change Log
-			const logSection = w.createEl("div"); logSection.style.cssText = "border-top:1px solid var(--background-modifier-border);padding-top:10px;";
-			const logHeader = logSection.createEl("div"); logHeader.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;";
-			const logTitle = logHeader.createEl("span"); logTitle.setText("Change Log"); logTitle.style.cssText = "font-size:12px;color:var(--text-muted);font-weight:600;";
-			const clrLog = logHeader.createEl("button"); clrLog.setText("Clear");
-			clrLog.style.cssText = "padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
-			clrLog.addEventListener("click", () => { state.log=[]; render(); });
-			const logEl = logSection.createEl("div"); logEl.style.cssText = "max-height:110px;overflow-y:auto;font-size:12px;color:var(--text-muted);";
-
+	// ── Quick buttons ─────────────────────────────────────────────────────
+	const quickRow = w.createEl("div", { cls: "dndbi-hp-quick-row" });
+	const qBtn = (lbl: string, d: number) => {
+		const b = quickRow.createEl("button", { cls: "dndbi-hp-quick-btn" });
+		b.setText(lbl);
+		b.addEventListener("click", () => {
+			if (d < 0) { const ft = Math.min(state.temp,-d); state.temp-=ft; state.current=Math.max(0,state.current-(-d-ft)); addLog(`⚔️ ${d} → ${state.current} HP`); }
+			else if (d === 0) { state.current=state.max; addLog(`✨ Full rest → ${state.max} HP`); }
+			else { state.current=Math.min(state.max,state.current+d); addLog(`💚 +${d} → ${state.current} HP`); }
 			render();
 		});
+	};
+	qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
 
-		// ── Character Sheet Launcher Code Block Processor ───────────────────────
-		// Handles ```dnd-sheet-launcher blocks emitted by buildMarkdown()
-		// Renders two buttons: open the interactive sheet, and refresh the
-		// character from D&D Beyond in place. All visual styling lives in
-		// styles.css (see .dndbi-launcher-row / .dndbi-sheet-btn / .dndbi-refresh-btn)
-		// rather than inline style strings.
-		this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
-			const params: Record<string, string> = {};
-			for (const line of source.split("\n")) {
-				const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
-			}
-			// "0" is not a real D&D Beyond character ID — it's the fallback used when
-			// the code block has no charId at all. Treat that as "no character" rather
-			// than silently trying (and failing) to import character 0.
-			const rawCharId = params["charId"];
-			const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
+	// ── Temp HP row ───────────────────────────────────────────────────────
+	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
+	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
+	tmpLbl.setText("Temp HP:");
+	const tmpInput = tmpRow.createEl("input", { cls: "dndbi-hp-tmp-input" }) as HTMLInputElement;
+	tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
+	const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
+	setTmpBtn.setText("Set");
+	setTmpBtn.addEventListener("click", () => {
+		state.temp=Math.max(0,parseInt(tmpInput.value,10)||0);
+		addLog(`💙 Temp HP set to ${state.temp}`); render();
+	});
+	const clrTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-clr-btn" });
+	clrTmpBtn.setText("Clear");
+	clrTmpBtn.addEventListener("click", () => {
+		state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render();
+	});
 
-			const row = el.createEl("div", { cls: "dndbi-launcher-row" });
+	// ── Death Saves ───────────────────────────────────────────────────────
+	const dsSection = w.createEl("div", { cls: "dndbi-hp-ds-section" });
+	const dsTitle = dsSection.createEl("div", { cls: "dndbi-hp-ds-title" });
+	dsTitle.setText("Death Saves");
+	const dsRow = dsSection.createEl("div", { cls: "dndbi-hp-ds-row" });
 
-			const sheetBtn = row.createEl("button", { cls: "dndbi-sheet-btn" });
-			sheetBtn.setText("⚔️ Open Interactive Character Sheet");
-			sheetBtn.addEventListener("click", () => {
-				if (!charId) {
-					new Notice("This note has no D&D Beyond character ID.", 3000);
-					return;
-				}
-				const cached = this.charCache.get(charId);
-				if (!cached) {
-					new Notice("Import the character first so the sheet has data to display.", 3000);
-					return;
-				}
-				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
-			});
+	const makePips = (
+		flavour: "is-success" | "is-failure",
+		pips: HTMLButtonElement[],
+		get: () => number,
+		set: (n: number) => void,
+	) => {
+		const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
+		for (let i = 1; i <= 3; i++) {
+			const p = grp.createEl("button", { cls: `dndbi-hp-ds-pip ${flavour}` }) as HTMLButtonElement;
+			const idx = i;
+			p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
+			pips.push(p);
+		}
+	};
+	makePips("is-success", dsSuccessPips, () => state.dsS, (n) => { state.dsS = n; });
+	makePips("is-failure", dsFailurePips, () => state.dsF, (n) => { state.dsF = n; });
 
-			const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
-			refreshBtn.setText("🔄 Refresh from D&D Beyond");
+	const dsReset = dsRow.createEl("button", { cls: "dndbi-hp-ds-reset-btn" });
+	dsReset.setText("Reset");
+	dsReset.addEventListener("click", () => {
+		state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render();
+	});
 
-			if (!charId) {
-				// No character ID on this note — refreshing would just fail confusingly,
-				// so disable the button entirely instead of attempting an import.
-				refreshBtn.disabled = true;
-				refreshBtn.title = "This note has no D&D Beyond character ID.";
-			} else {
-				refreshBtn.addEventListener("click", async () => {
-					const originalLabel = "🔄 Refresh from D&D Beyond";
-					refreshBtn.setText("⏳ Refreshing…");
-					refreshBtn.disabled = true;
+	// ── Change Log ────────────────────────────────────────────────────────
+	const logSection = w.createEl("div", { cls: "dndbi-hp-log-section" });
+	const logHeader = logSection.createEl("div", { cls: "dndbi-hp-log-header" });
+	const logTitle = logHeader.createEl("span", { cls: "dndbi-hp-log-title" });
+	logTitle.setText("Change Log");
+	const clrLog = logHeader.createEl("button", { cls: "dndbi-hp-log-clr-btn" });
+	clrLog.setText("Clear");
+	clrLog.addEventListener("click", () => { state.log=[]; render(); });
+	const logEl = logSection.createEl("div", { cls: "dndbi-hp-log-list" });
+
+	render();
+});
+
+// ── Character Sheet Launcher Code Block Processor ───────────────────────
+// Handles ```dnd-sheet-launcher blocks emitted by buildMarkdown()
+// Renders two buttons: open the interactive sheet, and refresh the
+// character from D&D Beyond in place. All visual styling lives in
+// styles.css (see .dndbi-launcher-row / .dndbi-sheet-btn / .dndbi-refresh-btn)
+// rather than inline style strings.
+this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source, el) => {
+	const params: Record<string, string> = {};
+	for (const line of source.split("\n")) {
+		const [k, v] = line.split(":"); if (k && v) params[k.trim()] = v.trim();
+	}
+	// "0" is not a real D&D Beyond character ID — it's the fallback used when
+	// the code block has no charId at all. Treat that as "no character" rather
+	// than silently trying (and failing) to import character 0.
+	const rawCharId = params["charId"];
+	const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
+
+	const row = el.createEl("div", { cls: "dndbi-launcher-row" });
+
+	const sheetBtn = row.createEl("button", { cls: "dndbi-sheet-btn" });
+	sheetBtn.setText("⚔️ Open Interactive Character Sheet");
+	sheetBtn.addEventListener("click", () => {
+		if (!charId) {
+			new Notice("This note has no D&D Beyond character ID.", 3000);
+			return;
+		}
+		const cached = this.charCache.get(charId);
+		if (!cached) {
+			new Notice("Import the character first so the sheet has data to display.", 3000);
+			return;
+		}
+		new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+	});
+
+	const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
+	refreshBtn.setText("🔄 Refresh from D&D Beyond");
+
+	if (!charId) {
+		// No character ID on this note — refreshing would just fail confusingly,
+		// so disable the button entirely instead of attempting an import.
+		refreshBtn.disabled = true;
+		refreshBtn.title = "This note has no D&D Beyond character ID.";
+	} else {
+		refreshBtn.addEventListener("click", () => {
+			const originalLabel = "🔄 Refresh from D&D Beyond";
+			refreshBtn.setText("⏳ Refreshing…");
+			refreshBtn.disabled = true;
+			refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
+
+			this.importCharacter(charId).then(() => {
+				// importCharacter() already shows its own success/failure Notice,
+				// but flash the button too so the result is visible at a glance.
+				refreshBtn.setText("✅ Refreshed");
+				refreshBtn.classList.add("dndbi-flash-success");
+			}).catch((e: unknown) => {
+				const msg = e instanceof Error ? e.message : String(e);
+				new Notice(`❌ Refresh failed: ${msg}`, 4000);
+				refreshBtn.setText("❌ Refresh failed");
+				refreshBtn.classList.add("dndbi-flash-error");
+				console.error("[DnD Beyond Importer]", e);
+			}).finally(() => {
+				window.setTimeout(() => {
+					refreshBtn.setText(originalLabel);
 					refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
-
-					try {
-						await this.importCharacter(charId);
-						// importCharacter() already shows its own success/failure Notice,
-						// but flash the button too so the result is visible at a glance.
-						refreshBtn.setText("✅ Refreshed");
-						refreshBtn.classList.add("dndbi-flash-success");
-					} catch (e: unknown) {
-						const msg = e instanceof Error ? e.message : String(e);
-						new Notice(`❌ Refresh failed: ${msg}`, 4000);
-						refreshBtn.setText("❌ Refresh failed");
-						refreshBtn.classList.add("dndbi-flash-error");
-						console.error("[DnD Beyond Importer]", e);
-					} finally {
-						window.setTimeout(() => {
-							refreshBtn.setText(originalLabel);
-							refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
-							refreshBtn.disabled = false;
-						}, 1600);
-					}
-				});
-			}
+					refreshBtn.disabled = false;
+				}, 1600);
+			});
 		});
 	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as DnDBeyondImporterSettings;
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-
-	async importCharacter(url: string): Promise<void> {
-		const charId = extractCharacterId(url);
-		if (!charId) {
-			new Notice("❌ Could not extract a character ID from that URL.");
-			throw new Error("Could not extract a character ID from that URL.");
-		}
-
-		new Notice(`⏳ Fetching character ${charId}…`);
-
-		let data: DdbApiResponse;
-		try {
-			const apiUrl = `https://character-service.dndbeyond.com/character/v5/character/${charId}`;
-			const resp = await requestUrl({
-				url: apiUrl,
-				headers: { Accept: "application/json" },
-			});
-			if (resp.status < 200 || resp.status >= 300)
-				throw new Error(`HTTP ${resp.status}`);
-			data = resp.json as DdbApiResponse;
-		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : String(e);
-			new Notice(`❌ Failed to fetch character: ${msg}`);
-			console.error("[DnD Beyond Importer]", e);
-			throw e instanceof Error ? e : new Error(msg);
-		}
-
-		let markdown: string;
-		try {
-			markdown = buildMarkdown(data, this.settings);
-		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : String(e);
-			new Notice(`❌ Failed to parse character data: ${msg}`);
-			console.error("[DnD Beyond Importer]", e);
-			throw e instanceof Error ? e : new Error(msg);
-		}
-
-		const charName: string = data?.data?.name ?? `Character-${charId}`;
-		const safeName = charName.replace(/[\\/:*?"<>|]/g, "-");
-
-		const folder = this.settings.outputFolder.trim();
-		if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
-			await this.app.vault.createFolder(folder);
-		}
-
-		const filePath = folder ? `${folder}/${safeName}.md` : `${safeName}.md`;
-		const existing = this.app.vault.getAbstractFileByPath(filePath);
-
-		if (existing instanceof TFile) {
-			await this.app.vault.modify(existing, markdown);
-			new Notice(`✅ Updated "${safeName}.md"`);
-		} else {
-			await this.app.vault.create(filePath, markdown);
-			new Notice(`✅ Created "${safeName}.md"`);
-		}
-
-		// Cache character data for the interactive sheet launcher
-		if (data.data) {
-			const char = data.data;
-			const charClasses: DdbClass[] = char.classes ?? [];
-			const charLevel = calcLevel(charClasses);
-			const charPb = profBonus(charLevel);
-			const charStats = {
-				str: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 1),
-				dex: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 2),
-				con: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 3),
-				int: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 4),
-				wis: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 5),
-				cha: getStatValue(char.stats ?? [], char.overrideStats ?? [], char.bonusStats ?? [], 6),
-			};
-			const entry = { char, stats: charStats, pb: charPb };
-			this.charCache.set(String(char.id), entry);
-		}
-
-		const file = this.app.vault.getAbstractFileByPath(filePath);
-		if (file instanceof TFile) {
-			// getLeaf(true) requires Obsidian ≥ 0.16.0 — minAppVersion set to 1.4.0 in manifest.json
-			const leaf = this.app.workspace.getLeaf(true);
-			await leaf.openFile(file);
-		}
-	}
-}
+});
 
 // ─── Import Modal ─────────────────────────────────────────────────────────────
 
@@ -1258,35 +1149,35 @@ class ImportModal extends Modal {
 		const input = contentEl.createEl("input", {
 			type: "text",
 			placeholder: "https://www.dndbeyond.com/characters/137202151/…",
-		});
-		Object.assign(input.style, {
-			width: "100%",
-			marginBottom: "12px",
-			padding: "6px 8px",
-			fontSize: "14px",
+			cls: "dndbi-import-input",
 		});
 
 		input.addEventListener("input", (e) => {
 			this.urlValue = (e.target as HTMLInputElement).value;
 		});
 		input.addEventListener("keydown", (e) => {
-			if (e.key === "Enter") void this.submit();
+			if (e.key === "Enter") {
+				this.submit().catch((err: unknown) => {
+					console.error("Import failed:", err);
+				});
+			}
 		});
 
-		const btnRow = contentEl.createEl("div");
-		Object.assign(btnRow.style, {
-			display: "flex", gap: "8px", justifyContent: "flex-end",
-		});
+		const btnRow = contentEl.createEl("div", { cls: "dndbi-import-btn-row" });
 
 		const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
 		cancelBtn.addEventListener("click", () => this.close());
 
 		const importBtn = btnRow.createEl("button", {
-			text: "Import", cls: "mod-cta",
+			text: "Import",
+			cls: "mod-cta",
 		});
-		importBtn.addEventListener("click", () => void this.submit());
+		importBtn.addEventListener("click", () => {
+			this.submit().catch((err: unknown) => {
+				console.error("Import failed:", err);
+			});
+		});
 
-		// Use window.setTimeout for popout window compatibility
 		window.setTimeout(() => input.focus(), 50);
 	}
 
@@ -1317,7 +1208,6 @@ class HPTrackerModal extends Modal {
 
 		contentEl.createEl("h2", { text: "❤️ HP Tracker" });
 
-		// Get or create HP tracker for this character
 		let tracker = this.plugin.hpTracking.get(this.characterId);
 		if (!tracker) {
 			tracker = { maxHp: 30, currentHp: 30, tempHp: 0 };
@@ -1325,110 +1215,72 @@ class HPTrackerModal extends Modal {
 		}
 
 		// ── HP Display ───────────────────────────────────────────────────────
-		const displayEl = contentEl.createEl("div");
-		Object.assign(displayEl.style, {
-			background: "var(--background-secondary)",
-			borderRadius: "8px",
-			padding: "16px",
-			marginBottom: "16px",
-			textAlign: "center",
-		});
+		const displayEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-display" });
 
-		const hpBarEl = displayEl.createEl("div");
-		Object.assign(hpBarEl.style, {
-			display: "flex",
-			height: "40px",
-			borderRadius: "6px",
-			overflow: "hidden",
-			marginBottom: "8px",
-			background: "var(--background-modifier-border)",
-		});
+		const hpBarEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-bar-wrap" });
 
-		const hpPercent = (tracker.currentHp / tracker.maxHp) * 100;
-		const hpColor = hpPercent > 50 ? "#4ade80" : hpPercent > 25 ? "#eab308" : "#ef4444";
+		const hpFillEl = hpBarEl.createEl("div", { cls: "dndbi-hpmodal-bar-fill" });
 
-		const hpFillEl = hpBarEl.createEl("div");
-		Object.assign(hpFillEl.style, {
-			width: `${Math.max(0, hpPercent)}%`,
-			background: hpColor,
-			transition: "width 0.2s ease",
-		});
+		const hpTextEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-text" });
 
-		const hpTextEl = displayEl.createEl("div");
-		Object.assign(hpTextEl.style, {
-			fontSize: "18px",
-			fontWeight: "bold",
-			marginBottom: "8px",
-		});
-
-		const tempEl = displayEl.createEl("div");
-		Object.assign(tempEl.style, { fontSize: "13px", color: "var(--text-muted)" });
+		const tempEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-temp" });
 
 		const updateDisplay = () => {
 			const total = tracker!.currentHp + tracker!.tempHp;
 			hpTextEl.setText(`${total}/${tracker!.maxHp} HP`);
-			if (tracker!.tempHp > 0) {
-				tempEl.setText(`Temp: ${tracker!.tempHp}`);
-			} else {
-				tempEl.setText("");
-			}
+			tempEl.setText(tracker!.tempHp > 0 ? `Temp: ${tracker!.tempHp}` : "");
 
-			const newPercent = (tracker!.currentHp / tracker!.maxHp) * 100;
-			const newColor = newPercent > 50 ? "#4ade80" : newPercent > 25 ? "#eab308" : "#ef4444";
-			hpFillEl.style.width = `${Math.max(0, newPercent)}%`;
-			hpFillEl.style.background = newColor;
+			const newPercent = Math.max(0, (tracker!.currentHp / tracker!.maxHp) * 100);
+			hpFillEl.setCssStyles({ width: `${newPercent}%` });
+			hpFillEl.removeClass("dndbi-hpmodal-bar-fill--high", "dndbi-hpmodal-bar-fill--mid", "dndbi-hpmodal-bar-fill--low");
+			if (newPercent > 50) {
+				hpFillEl.addClass("dndbi-hpmodal-bar-fill--high");
+			} else if (newPercent > 25) {
+				hpFillEl.addClass("dndbi-hpmodal-bar-fill--mid");
+			} else {
+				hpFillEl.addClass("dndbi-hpmodal-bar-fill--low");
+			}
 		};
 
 		// ── Current HP Controls ──────────────────────────────────────────────
 		contentEl.createEl("h3", { text: "Current HP" });
 
-		const currentCtrlEl = contentEl.createEl("div");
-		Object.assign(currentCtrlEl.style, {
-			display: "flex",
-			gap: "8px",
-			marginBottom: "16px",
-			alignItems: "center",
-		});
+		const currentCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const currentInputEl = currentCtrlEl.createEl("input");
-		Object.assign(currentInputEl, {
-			type: "number",
-			value: String(tracker.currentHp),
-			min: "0",
-			max: String(tracker.maxHp),
+		const currentInputEl = currentCtrlEl.createEl("input", {
+			cls: "dndbi-hpmodal-number-input",
 		});
-		Object.assign(currentInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		currentInputEl.type = "number";
+		currentInputEl.value = String(tracker.currentHp);
+		currentInputEl.min = "0";
+		currentInputEl.max = String(tracker.maxHp);
 		currentInputEl.addEventListener("change", () => {
 			tracker!.currentHp = Math.max(0, Math.min(tracker!.maxHp, Number(currentInputEl.value)));
 			updateDisplay();
 		});
 
-		const minusBtn = currentCtrlEl.createEl("button", { text: "−5" });
-		Object.assign(minusBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		const minusBtn = currentCtrlEl.createEl("button", { text: "−5", cls: "dndbi-hpmodal-step-btn" });
 		minusBtn.addEventListener("click", () => {
 			tracker!.currentHp = Math.max(0, tracker!.currentHp - 5);
 			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
-		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1" });
-		Object.assign(minusOneBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1", cls: "dndbi-hpmodal-step-btn" });
 		minusOneBtn.addEventListener("click", () => {
 			tracker!.currentHp = Math.max(0, tracker!.currentHp - 1);
 			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
-		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1" });
-		Object.assign(plusOneBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1", cls: "dndbi-hpmodal-step-btn" });
 		plusOneBtn.addEventListener("click", () => {
 			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 1);
 			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
 		});
 
-		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5" });
-		Object.assign(plusFiveBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5", cls: "dndbi-hpmodal-step-btn" });
 		plusFiveBtn.addEventListener("click", () => {
 			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 5);
 			currentInputEl.value = String(tracker!.currentHp);
@@ -1438,28 +1290,20 @@ class HPTrackerModal extends Modal {
 		// ── Temporary HP Controls ────────────────────────────────────────────
 		contentEl.createEl("h3", { text: "Temporary HP" });
 
-		const tempCtrlEl = contentEl.createEl("div");
-		Object.assign(tempCtrlEl.style, {
-			display: "flex",
-			gap: "8px",
-			marginBottom: "16px",
-			alignItems: "center",
-		});
+		const tempCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const tempInputEl = tempCtrlEl.createEl("input");
-		Object.assign(tempInputEl, {
-			type: "number",
-			value: String(tracker.tempHp),
-			min: "0",
+		const tempInputEl = tempCtrlEl.createEl("input", {
+			cls: "dndbi-hpmodal-number-input",
 		});
-		Object.assign(tempInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		tempInputEl.type = "number";
+		tempInputEl.value = String(tracker.tempHp);
+		tempInputEl.min = "0";
 		tempInputEl.addEventListener("change", () => {
 			tracker!.tempHp = Math.max(0, Number(tempInputEl.value));
 			updateDisplay();
 		});
 
-		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear" });
-		Object.assign(tempClearBtn.style, { padding: "6px 12px", fontSize: "14px" });
+		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear", cls: "dndbi-hpmodal-step-btn" });
 		tempClearBtn.addEventListener("click", () => {
 			tracker!.tempHp = 0;
 			tempInputEl.value = "0";
@@ -1469,24 +1313,16 @@ class HPTrackerModal extends Modal {
 		// ── Max HP Setup ─────────────────────────────────────────────────────
 		contentEl.createEl("h3", { text: "Max HP" });
 
-		const maxCtrlEl = contentEl.createEl("div");
-		Object.assign(maxCtrlEl.style, {
-			display: "flex",
-			gap: "8px",
-			marginBottom: "16px",
-			alignItems: "center",
-		});
+		const maxCtrlEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-ctrl-row" });
 
-		const maxInputEl = maxCtrlEl.createEl("input");
-		Object.assign(maxInputEl, {
-			type: "number",
-			value: String(tracker.maxHp),
-			min: "1",
+		const maxInputEl = maxCtrlEl.createEl("input", {
+			cls: "dndbi-hpmodal-number-input",
 		});
-		Object.assign(maxInputEl.style, { flex: "1", padding: "6px", fontSize: "14px" });
+		maxInputEl.type = "number";
+		maxInputEl.value = String(tracker.maxHp);
+		maxInputEl.min = "1";
 		maxInputEl.addEventListener("change", () => {
 			tracker!.maxHp = Math.max(1, Number(maxInputEl.value));
-			// Cap current HP to new max
 			tracker!.currentHp = Math.min(tracker!.currentHp, tracker!.maxHp);
 			currentInputEl.value = String(tracker!.currentHp);
 			updateDisplay();
@@ -1505,7 +1341,9 @@ class HPTrackerModal extends Modal {
 
 class DiceRollerModal extends Modal {
 	plugin: DnDBeyondImporterPlugin;
-	filterDie: string | null = null; // null = show all
+	filterDie: string | null = null;
+	private historyEl!: HTMLElement;
+	private statsEl!: HTMLElement;
 
 	constructor(app: App, plugin: DnDBeyondImporterPlugin) {
 		super(app);
@@ -1520,61 +1358,33 @@ class DiceRollerModal extends Modal {
 
 		// ── Die buttons ─────────────────────────────────────────────────────
 		const dice: { label: string; sides: number }[] = [
-			{ label: "d4", sides: 4 },
-			{ label: "d6", sides: 6 },
-			{ label: "d8", sides: 8 },
-			{ label: "d10", sides: 10 },
-			{ label: "d12", sides: 12 },
-			{ label: "d20", sides: 20 },
+			{ label: "d4",   sides: 4   },
+			{ label: "d6",   sides: 6   },
+			{ label: "d8",   sides: 8   },
+			{ label: "d10",  sides: 10  },
+			{ label: "d12",  sides: 12  },
+			{ label: "d20",  sides: 20  },
 			{ label: "d100", sides: 100 },
 		];
 
-		const btnGrid = contentEl.createEl("div");
-		Object.assign(btnGrid.style, {
-			display: "flex",
-			flexWrap: "wrap",
-			gap: "8px",
-			marginBottom: "16px",
-		});
+		const btnGrid = contentEl.createEl("div", { cls: "dndbi-dice-btn-grid" });
 
 		// ── Result display ───────────────────────────────────────────────────
-		const resultEl = contentEl.createEl("div");
-		Object.assign(resultEl.style, {
-			textAlign: "center",
-			fontSize: "48px",
-			fontWeight: "bold",
-			margin: "12px 0",
-			minHeight: "64px",
-			letterSpacing: "2px",
-		});
+		const resultEl = contentEl.createEl("div", { cls: "dndbi-dice-result" });
 		resultEl.setText("—");
 
-		const subtitleEl = contentEl.createEl("div");
-		Object.assign(subtitleEl.style, {
-			textAlign: "center",
-			fontSize: "13px",
-			color: "var(--text-muted)",
-			marginBottom: "16px",
-		});
+		const subtitleEl = contentEl.createEl("div", { cls: "dndbi-dice-subtitle" });
 
 		for (const die of dice) {
 			const btn = btnGrid.createEl("button", {
 				text: die.label,
-				cls: "mod-cta",
-			});
-			Object.assign(btn.style, {
-				flex: "1 1 calc(14% - 8px)",
-				minWidth: "52px",
-				padding: "10px 4px",
-				fontSize: "15px",
-				fontWeight: "600",
+				cls: "mod-cta dndbi-dice-btn",
 			});
 			btn.addEventListener("click", () => {
 				const roll = Math.floor(Math.random() * die.sides) + 1;
 				const now = new Date();
 				const timestamp = now.toLocaleString();
 
-				// Save to history
 				this.plugin.rollHistory.unshift({
 					die: die.label,
 					result: roll,
@@ -1582,18 +1392,14 @@ class DiceRollerModal extends Modal {
 					label: die.label,
 					timestamp,
 				});
-				// Keep last 50 rolls
 				if (this.plugin.rollHistory.length > 50)
 					this.plugin.rollHistory.length = 50;
 
-				// Show result in modal
 				resultEl.setText(`${roll}`);
 				subtitleEl.setText(`${die.label} rolled at ${timestamp}`);
 
-				// Obsidian notification
 				new Notice(`🎲 ${die.label}: ${roll}`, 4000);
 
-				// Refresh history list
 				this.renderHistory();
 			});
 		}
@@ -1602,64 +1408,37 @@ class DiceRollerModal extends Modal {
 		contentEl.createEl("h3", { text: "Roll History" });
 
 		// ── History controls (filter, export, stats) ────────────────────────
-		const controlsEl = contentEl.createEl("div");
-		Object.assign(controlsEl.style, {
-			display: "flex",
-			gap: "6px",
-			marginBottom: "8px",
-			flexWrap: "wrap",
-		});
+		const controlsEl = contentEl.createEl("div", { cls: "dndbi-dice-controls" });
 
-		const filterLabel = controlsEl.createEl("label");
-		Object.assign(filterLabel.style, { fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" });
+		const filterLabel = controlsEl.createEl("label", { cls: "dndbi-dice-filter-label" });
 		filterLabel.setText("Filter:");
-		const filterSelect = filterLabel.createEl("select");
+		const filterSelect = filterLabel.createEl("select", { cls: "dndbi-dice-filter-select" });
 		filterSelect.add(new Option("All dice", ""));
 		for (const die of dice) {
 			filterSelect.add(new Option(die.label, die.label));
 		}
-		filterSelect.addEventListener("change", (e) => {
-			this.filterDie = (e.target as HTMLSelectElement).value || null;
+		filterSelect.addEventListener("change", () => {
+			this.filterDie = filterSelect.value || null;
 			this.renderHistory();
 		});
-		Object.assign(filterSelect.style, { fontSize: "12px", padding: "2px 4px" });
 
-		const exportBtn = controlsEl.createEl("button", { text: "Export CSV" });
-		Object.assign(exportBtn.style, { fontSize: "11px", padding: "3px 8px" });
+		const exportBtn = controlsEl.createEl("button", { text: "Export CSV", cls: "dndbi-dice-ctrl-btn" });
 		exportBtn.addEventListener("click", () => this.exportHistoryCSV());
 
-		const copyBtn = controlsEl.createEl("button", { text: "Copy History" });
-		Object.assign(copyBtn.style, { fontSize: "11px", padding: "3px 8px" });
-		copyBtn.addEventListener("click", () => this.copyHistoryToClipboard());
+		const copyBtn = controlsEl.createEl("button", { text: "Copy History", cls: "dndbi-dice-ctrl-btn" });
+		copyBtn.addEventListener("click", () => {
+			this.copyHistoryToClipboard().catch((err: unknown) => {
+				console.error("Copy failed:", err);
+			});
+		});
 
 		// ── History display ─────────────────────────────────────────────────
-		const historyEl = contentEl.createEl("div");
-		Object.assign(historyEl.style, {
-			maxHeight: "200px",
-			overflowY: "auto",
-			border: "1px solid var(--background-modifier-border)",
-			borderRadius: "6px",
-			padding: "6px 8px",
-		});
-		(this as any).historyEl = historyEl; // Store for renderHistory
+		this.historyEl = contentEl.createEl("div", { cls: "dndbi-dice-history" });
 
 		// ── Statistics section ───────────────────────────────────────────────
-		const statsEl = contentEl.createEl("div");
-		Object.assign(statsEl.style, {
-			marginTop: "12px",
-			fontSize: "12px",
-			color: "var(--text-muted)",
-			padding: "8px",
-			background: "var(--background-secondary)",
-			borderRadius: "4px",
-		});
-		(this as any).statsEl = statsEl; // Store for renderHistory
+		this.statsEl = contentEl.createEl("div", { cls: "dndbi-dice-stats" });
 
-		const clearBtn = contentEl.createEl("button", { text: "Clear History" });
-		Object.assign(clearBtn.style, {
-			marginTop: "8px",
-			fontSize: "12px",
-		});
+		const clearBtn = contentEl.createEl("button", { text: "Clear History", cls: "dndbi-dice-clear-btn" });
 		clearBtn.addEventListener("click", () => {
 			this.plugin.rollHistory = [];
 			this.renderHistory();
@@ -1674,40 +1453,30 @@ class DiceRollerModal extends Modal {
 	}
 
 	renderHistory() {
-		const historyEl = (this as any).historyEl;
-		const statsEl = (this as any).statsEl;
 		const filtered = this.getFilteredHistory();
 
-		historyEl.empty();
+		this.historyEl.empty();
 		if (filtered.length === 0) {
-			const empty = historyEl.createEl("div", { text: "No rolls yet." });
-			Object.assign(empty.style, {
-				color: "var(--text-muted)",
-				fontSize: "13px",
-				padding: "4px 0",
+			this.historyEl.createEl("div", {
+				text: "No rolls yet.",
+				cls: "dndbi-dice-history-empty",
 			});
 		} else {
 			for (const entry of filtered) {
-				const row = historyEl.createEl("div");
-				Object.assign(row.style, {
-					display: "flex",
-					justifyContent: "space-between",
-					padding: "3px 0",
-					borderBottom: "1px solid var(--background-modifier-border)",
-					fontSize: "13px",
-				});
+				const row = this.historyEl.createEl("div", { cls: "dndbi-dice-history-row" });
 				const entryModStr = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
 				const entryTotal = entry.result + entry.modifier;
 				row.createEl("span", {
 					text: `🎲 ${entry.label}: ${entry.die}(${entry.result})${entry.modifier !== 0 ? entryModStr : ""} = ${entryTotal}`,
 				});
-				const ts = row.createEl("span", { text: entry.timestamp });
-				Object.assign(ts.style, { color: "var(--text-muted)" });
+				row.createEl("span", {
+					text: entry.timestamp,
+					cls: "dndbi-dice-history-ts",
+				});
 			}
 		}
 
-		// ── Update statistics ───────────────────────────────────────────────
-		this.updateStats(filtered, statsEl);
+		this.updateStats(filtered, this.statsEl);
 	}
 
 	updateStats(filtered: DiceRoll[], statsEl: HTMLElement) {
@@ -1721,9 +1490,8 @@ class DiceRollerModal extends Modal {
 		const max = Math.max(...results);
 		const min = Math.min(...results);
 		const nat20s = results.filter((r) => r === 20).length;
-		const nat1s = results.filter((r) => r === 1).length;
+		const nat1s  = results.filter((r) => r === 1).length;
 
-		// Mode (most common roll)
 		const freq: Record<number, number> = {};
 		results.forEach((r) => {
 			freq[r] = (freq[r] ?? 0) + 1;
@@ -1733,7 +1501,7 @@ class DiceRollerModal extends Modal {
 
 		let statsText = `Avg: ${avg} | Max: ${max} | Min: ${min} | Mode: ${modeStr}`;
 		if (nat20s > 0) statsText += ` | 🎉 ${nat20s}×`;
-		if (nat1s > 0) statsText += ` | 💀 ${nat1s}×`;
+		if (nat1s  > 0) statsText += ` | 💀 ${nat1s}×`;
 
 		statsEl.setText(statsText);
 	}
@@ -1752,16 +1520,16 @@ class DiceRollerModal extends Modal {
 		}
 
 		const blob = new Blob([csv], { type: "text/csv" });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement("a");
-		a.href = url;
+		const url  = URL.createObjectURL(blob);
+		const a    = activeDocument.createElement("a");
+		a.href     = url;
 		a.download = `roll-history-${new Date().toISOString().split("T")[0]}.csv`;
 		a.click();
 		URL.revokeObjectURL(url);
 		new Notice("History exported as CSV.", 2000);
 	}
 
-	copyHistoryToClipboard() {
+	async copyHistoryToClipboard() {
 		const filtered = this.getFilteredHistory();
 		if (filtered.length === 0) {
 			new Notice("No rolls to copy.", 2000);
@@ -1771,25 +1539,12 @@ class DiceRollerModal extends Modal {
 		let text = "Roll History:\n";
 		for (const entry of filtered) {
 			const modStr = entry.modifier >= 0 ? `+${entry.modifier}` : `${entry.modifier}`;
-			const total = entry.result + entry.modifier;
+			const total  = entry.result + entry.modifier;
 			text += `${entry.die}(${entry.result})${entry.modifier !== 0 ? modStr : ""} = ${total} [${entry.timestamp}]\n`;
 		}
 
-		// Use document.execCommand for clipboard write — avoids browser clipboard API
-		const ta = document.createElement("textarea");
-		ta.value = text;
-		ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
-		document.body.appendChild(ta);
-		ta.focus();
-		ta.select();
-		try {
-			document.execCommand("copy");
-			new Notice("History copied to clipboard.", 2000);
-		} catch {
-			new Notice("Copy failed — please copy the text manually.", 3000);
-		} finally {
-			document.body.removeChild(ta);
-		}
+		await navigator.clipboard.writeText(text);
+		new Notice("History copied to clipboard.", 2000);
 	}
 
 	onClose() {
@@ -1798,14 +1553,12 @@ class DiceRollerModal extends Modal {
 }
 
 // ─── 5etools data fetcher ──────────────────────────────────────────────────────
-
 async function fetch5eData(
 	baseUrl: string,
 	type: "spells" | "items" | "classfeature" | "races",
 	name: string
 ): Promise<Record<string, unknown> | null> {
 	const clean = baseUrl.replace(/\/$/, "");
-	// 5etools data lives at /data/<type>.json — we search the array by name
 	const urls: Record<string, string> = {
 		spells:       `${clean}/data/spells/spells-phb.json`,
 		items:        `${clean}/data/items.json`,
@@ -1815,32 +1568,51 @@ async function fetch5eData(
 	try {
 		const resp = await requestUrl({ url: urls[type], headers: { Accept: "application/json" } });
 		if (resp.status < 200 || resp.status >= 300) return null;
-		const json = resp.json as Record<string, unknown[]>;
-		// Each file has a top-level array keyed by type name (spell, item, classFeature, race)
-		const keyMap: Record<string, string> = { spells: "spell", items: "item", classfeature: "classFeature", races: "race" };
-		const arr = json[keyMap[type]] as Array<Record<string, unknown>> | undefined;
-		if (!arr) return null;
+		const json = resp.json as Record<string, unknown>;
+		const keyMap: Record<string, string> = {
+			spells:       "spell",
+			items:        "item",
+			classfeature: "classFeature",
+			races:        "race",
+		};
+		const raw = json[keyMap[type]];
+		if (!Array.isArray(raw)) return null;
+		const arr = raw as Array<Record<string, unknown>>;
 		const lower = name.toLowerCase();
-		return arr.find((e) => (e["name"] as string)?.toLowerCase() === lower) ?? null;
+		return arr.find((e) => typeof e["name"] === "string" && e["name"].toLowerCase() === lower) ?? null;
 	} catch {
 		return null;
 	}
 }
 
 function render5eDescription(entry: Record<string, unknown>): string {
-	// 5etools stores descriptions as arrays of strings or objects
-	const entries = entry["entries"] as Array<unknown> | undefined;
-	if (!entries) return entry["desc"] as string ?? "";
-	return entries.map((e) => {
+	const entries = entry["entries"];
+	if (!Array.isArray(entries)) {
+		return typeof entry["desc"] === "string" ? entry["desc"] : "";
+	}
+	return (entries as Array<unknown>).map((e) => {
 		if (typeof e === "string") return e;
+		if (typeof e !== "object" || e === null) return JSON.stringify(e);
 		const obj = e as Record<string, unknown>;
-		if (obj["type"] === "entries") return `**${obj["name"] ?? ""}**\n${(obj["entries"] as string[])?.join("\n") ?? ""}`;
-		if (obj["type"] === "list") return (obj["items"] as string[])?.map((i) => `• ${i}`).join("\n") ?? "";
+		if (obj["type"] === "entries") {
+			const subEntries = Array.isArray(obj["entries"])
+				? (obj["entries"] as string[]).join("\n")
+				: "";
+			const subName = typeof obj["name"] === "string" ? obj["name"] : "";
+			return `**${subName}**\n${subEntries}`;
+		}
+		if (obj["type"] === "list") {
+			const items = Array.isArray(obj["items"]) ? (obj["items"] as string[]) : [];
+			return items.map((i) => `• ${i}`).join("\n");
+		}
 		if (obj["type"] === "table") {
-			const cols = obj["colLabels"] as string[] ?? [];
-			const rows = obj["rows"] as string[][] ?? [];
-			return `| ${cols.join(" | ")} |\n|${cols.map(() => "---").join("|")}|\n` +
-				rows.map((r) => `| ${r.join(" | ")} |`).join("\n");
+			const cols = Array.isArray(obj["colLabels"]) ? (obj["colLabels"] as string[]) : [];
+			const rows = Array.isArray(obj["rows"])    ? (obj["rows"]    as string[][]) : [];
+			return (
+				`| ${cols.join(" | ")} |\n` +
+				`|${cols.map(() => "---").join("|")}|\n` +
+				rows.map((r) => `| ${r.join(" | ")} |`).join("\n")
+			);
 		}
 		return JSON.stringify(e);
 	}).join("\n\n");
@@ -1861,8 +1633,13 @@ class FullCharacterSheetModal extends Modal {
 		this.char   = char;
 		this.stats  = stats;
 		this.pb     = pb;
-		// Make modal wider
-		this.modalEl.style.cssText += ";width:min(900px,95vw);max-height:92vh;overflow-y:auto;";
+		// Make modal wider — width/max-height are layout concerns not covered by any
+		// existing CSS class, so we use the Obsidian-sanctioned setCssStyles helper.
+		this.modalEl.setCssStyles({
+			width:     "min(900px, 95vw)",
+			maxHeight: "92vh",
+			overflowY: "auto",
+		});
 	}
 
 	// ── Roll helpers ─────────────────────────────────────────────────────────
@@ -1917,16 +1694,17 @@ class FullCharacterSheetModal extends Modal {
 		if (!this.rollLogEl) return;
 		this.rollLogEl.empty();
 		if (this.rollLog.length === 0) {
-			this.rollLogEl.createEl("div", { text: "No rolls yet." }).style.cssText = "color:var(--text-muted);font-size:12px;padding:4px 0;";
+			const empty = this.rollLogEl.createEl("div", { text: "No rolls yet." });
+			empty.addClass("dndbi-cs-roll-empty");
 			return;
 		}
 		for (const entry of this.rollLog) {
 			const row = this.rollLogEl.createEl("div");
-			row.style.cssText = "display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--background-modifier-border);font-size:12px;";
+			row.addClass("dndbi-cs-roll-row");
 			row.createEl("span").setText(entry.text);
 			const ts = row.createEl("span");
 			ts.setText(entry.ts);
-			ts.style.cssText = "color:var(--text-muted);margin-left:8px;white-space:nowrap;";
+			ts.addClass("dndbi-cs-roll-ts");
 		}
 	}
 
@@ -1958,35 +1736,35 @@ class FullCharacterSheetModal extends Modal {
 
 	private sectionEl(parent: HTMLElement, title: string): HTMLElement {
 		const wrap = parent.createEl("div");
-		wrap.style.cssText = "margin-bottom:24px;";
+		wrap.addClass("dndbi-cs-section");
 		const hdr = wrap.createEl("div");
-		hdr.style.cssText = "font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--background-modifier-border);padding-bottom:4px;margin-bottom:12px;";
+		hdr.addClass("dndbi-cs-section-hdr");
 		hdr.setText(title);
 		return wrap;
 	}
 
 	private pill(parent: HTMLElement, label: string, value: string, sub?: string): void {
 		const p = parent.createEl("div");
-		p.style.cssText = "display:flex;flex-direction:column;align-items:center;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 14px;min-width:70px;";
+		p.addClass("dndbi-cs-pill");
 		const lbl = p.createEl("div");
 		lbl.setText(label);
-		lbl.style.cssText = "font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;";
+		lbl.addClass("dndbi-cs-pill-label");
 		const val = p.createEl("div");
 		val.setText(value);
-		val.style.cssText = "font-size:22px;font-weight:900;color:var(--text-normal);line-height:1.1;";
+		val.addClass("dndbi-cs-pill-value");
 		if (sub) {
 			const s = p.createEl("div");
 			s.setText(sub);
-			s.style.cssText = "font-size:11px;color:var(--text-muted);margin-top:2px;";
+			s.addClass("dndbi-cs-pill-sub");
 		}
 	}
 
 	private rollBtn(parent: HTMLElement, label: string, modifier: number): HTMLButtonElement {
-		const btn = parent.createEl("button") as HTMLButtonElement;
+		const btn = parent.createEl("button");
 		btn.setText(`${this.modStr(modifier)}`);
-		btn.style.cssText = "padding:2px 8px;border-radius:4px;border:1px solid var(--interactive-accent);background:transparent;color:var(--interactive-accent);font-size:12px;font-weight:700;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;";
-		btn.addEventListener("mouseenter", () => { btn.style.background = "var(--interactive-accent)"; btn.style.color = "var(--text-on-accent)"; });
-		btn.addEventListener("mouseleave", () => { btn.style.background = "transparent"; btn.style.color = "var(--interactive-accent)"; });
+		btn.addClass("dndbi-cs-roll-btn");
+		btn.addEventListener("mouseenter", () => { btn.addClass("dndbi-cs-roll-btn--active"); });
+		btn.addEventListener("mouseleave", () => { btn.removeClass("dndbi-cs-roll-btn--active"); });
 		btn.addEventListener("click", () => this.rollD20(modifier, label));
 		return btn;
 	}
@@ -1996,7 +1774,7 @@ class FullCharacterSheetModal extends Modal {
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.style.cssText = "padding:0;";
+		contentEl.addClass("dndbi-cs-content");
 
 		const char = this.char;
 		const stats = this.stats;
@@ -2017,37 +1795,37 @@ class FullCharacterSheetModal extends Modal {
 
 		// ── Layout: two columns on wide, single on narrow ────────────────────
 		const root = contentEl.createEl("div");
-		root.style.cssText = "display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr;gap:0;min-height:600px;";
+		root.addClass("dndbi-cs-root");
 
 		const mainCol = root.createEl("div");
-		mainCol.style.cssText = "padding:20px 20px 20px 24px;overflow-y:auto;border-right:1px solid var(--background-modifier-border);";
+		mainCol.addClass("dndbi-cs-main-col");
 
 		const sideCol = root.createEl("div");
-		sideCol.style.cssText = "padding:16px;overflow-y:auto;background:var(--background-secondary);";
+		sideCol.addClass("dndbi-cs-side-col");
 
 		// ════════════════════════════════════════════════════════════════════
 		// HEADER
 		// ════════════════════════════════════════════════════════════════════
 		const header = mainCol.createEl("div");
-		header.style.cssText = "display:flex;align-items:center;gap:16px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--background-modifier-border);";
+		header.addClass("dndbi-cs-header");
 
 		if (char.avatarUrl) {
-			const avatar = header.createEl("img") as HTMLImageElement;
+			const avatar = header.createEl("img");
 			avatar.src = char.avatarUrl;
-			avatar.style.cssText = "width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid var(--interactive-accent);flex-shrink:0;";
+			avatar.addClass("dndbi-cs-avatar");
 		}
 
 		const headerText = header.createEl("div");
 		const nameEl = headerText.createEl("div");
 		nameEl.setText(char.name ?? "Unknown");
-		nameEl.style.cssText = "font-size:22px;font-weight:900;color:var(--text-normal);line-height:1.1;";
+		nameEl.addClass("dndbi-cs-char-name");
 		const subEl = headerText.createEl("div");
 		subEl.setText(`${classString} • ${raceName} • Level ${totalLevel}`);
-		subEl.style.cssText = "font-size:13px;color:var(--text-muted);margin-top:3px;";
+		subEl.addClass("dndbi-cs-char-sub");
 
 		const closeBtn = header.createEl("button");
 		closeBtn.setText("✕ Close");
-		closeBtn.style.cssText = "margin-left:auto;padding:6px 14px;border-radius:6px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;flex-shrink:0;";
+		closeBtn.addClass("dndbi-cs-close-btn");
 		closeBtn.addEventListener("click", () => this.close());
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2055,7 +1833,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const coreSection = this.sectionEl(mainCol, "Core Stats");
 		const coreRow = coreSection.createEl("div");
-		coreRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+		coreRow.addClass("dndbi-cs-core-row");
 		this.pill(coreRow, "HP", `${hpState.current}/${hpState.max}`, hpState.temp > 0 ? `+${hpState.temp} temp` : undefined);
 		this.pill(coreRow, "AC", String(ac));
 		this.pill(coreRow, "Speed", `${speed} ft`);
@@ -2067,29 +1845,34 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const hpSection = this.sectionEl(mainCol, "HP Tracker");
 		const hpWrap = hpSection.createEl("div");
-		hpWrap.style.cssText = "display:flex;flex-direction:column;gap:8px;max-width:480px;";
+		hpWrap.addClass("dndbi-cs-hp-wrap");
 
 		// HP bar
 		const barWrap = hpWrap.createEl("div");
-		barWrap.style.cssText = "position:relative;height:28px;border-radius:6px;overflow:hidden;background:var(--background-modifier-border);";
+		barWrap.addClass("dndbi-cs-bar-wrap");
 		const barFill = barWrap.createEl("div");
+		barFill.addClass("dndbi-cs-bar-fill");
 		const barLbl = barWrap.createEl("div");
-		barLbl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5);pointer-events:none;";
+		barLbl.addClass("dndbi-cs-bar-lbl");
 
 		let hpSt = { ...hpState };
 
-		const hpPills = coreRow.querySelector("div") as HTMLElement | null;
+		const dsSPips: HTMLElement[] = [];
+		const dsFPips: HTMLElement[] = [];
 
 		const renderHP = () => {
 			const pct = Math.max(0, Math.min(100, (hpSt.current / hpSt.max) * 100));
-			barFill.style.cssText = `height:100%;width:${pct}%;background:${pct > 50 ? "#4ade80" : pct > 25 ? "#eab308" : "#ef4444"};transition:width .25s ease,background .25s ease;border-radius:6px;`;
+			// Width is data-driven so we must set it inline; colour uses CSS classes.
+			barFill.setCssStyles({ width: `${pct}%` });
+			barFill.removeClass("dndbi-cs-bar-fill--high", "dndbi-cs-bar-fill--mid", "dndbi-cs-bar-fill--low");
+			barFill.addClass(pct > 50 ? "dndbi-cs-bar-fill--high" : pct > 25 ? "dndbi-cs-bar-fill--mid" : "dndbi-cs-bar-fill--low");
 			barLbl.setText(`${hpSt.current} / ${hpSt.max} HP${hpSt.temp > 0 ? ` (+${hpSt.temp} temp)` : ""}`);
 			// refresh core stat pill
-			const hpPillVal = coreRow.querySelector("div div:nth-child(2)") as HTMLElement | null;
+			const hpPillVal = coreRow.querySelector(".dndbi-cs-pill-value") as HTMLElement | null;
 			if (hpPillVal) hpPillVal.setText(`${hpSt.current}/${hpSt.max}`);
 			// update death save pips
-			dsSPips.forEach((p, i) => { p.style.background = i < hpSt.dsS ? "#4ade80" : "transparent"; });
-			dsFPips.forEach((p, i) => { p.style.background = i < hpSt.dsF ? "#ef4444" : "transparent"; });
+			dsSPips.forEach((p, i) => { p.toggleClass("dndbi-cs-ds-pip--filled", i < hpSt.dsS); });
+			dsFPips.forEach((p, i) => { p.toggleClass("dndbi-cs-ds-pip--filled", i < hpSt.dsF); });
 			this.saveHP(hpSt);
 		};
 
@@ -2102,14 +1885,15 @@ class FullCharacterSheetModal extends Modal {
 
 		// dmg/heal row
 		const dmgRow = hpWrap.createEl("div");
-		dmgRow.style.cssText = "display:flex;gap:6px;align-items:center;";
-		const amtInput = dmgRow.createEl("input") as HTMLInputElement;
+		dmgRow.addClass("dndbi-cs-dmg-row");
+		const amtInput = dmgRow.createEl("input");
 		amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-		amtInput.style.cssText = "width:60px;padding:5px 6px;font-size:14px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
+		amtInput.addClass("dndbi-cs-amt-input");
 		const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
 
 		const dmgBtn = dmgRow.createEl("button");
-		dmgBtn.setText("⚔️ Damage"); dmgBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+		dmgBtn.setText("⚔️ Damage");
+		dmgBtn.addClass("dndbi-cs-dmg-btn");
 		dmgBtn.addEventListener("click", () => {
 			const n = getAmt(); const fromT = Math.min(hpSt.temp, n);
 			hpSt.temp = hpSt.temp - fromT; hpSt.current = Math.max(0, hpSt.current - (n - fromT));
@@ -2117,7 +1901,8 @@ class FullCharacterSheetModal extends Modal {
 		});
 
 		const healBtn = dmgRow.createEl("button");
-		healBtn.setText("💚 Heal"); healBtn.style.cssText = "flex:1;padding:6px 0;border-radius:5px;border:none;background:#4ade80;color:#1a1a1a;font-weight:700;font-size:13px;cursor:pointer;";
+		healBtn.setText("💚 Heal");
+		healBtn.addClass("dndbi-cs-heal-btn");
 		healBtn.addEventListener("click", () => {
 			const n = getAmt(); hpSt.current = Math.min(hpSt.max, hpSt.current + n);
 			addHPLog(`💚 +${n} heal → ${hpSt.current} HP`); renderHP();
@@ -2125,10 +1910,10 @@ class FullCharacterSheetModal extends Modal {
 
 		// quick buttons
 		const quickRow = hpWrap.createEl("div");
-		quickRow.style.cssText = "display:flex;gap:4px;";
+		quickRow.addClass("dndbi-cs-quick-row");
 		const qBtn = (lbl: string, d: number) => {
 			const b = quickRow.createEl("button"); b.setText(lbl);
-			b.style.cssText = "flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+			b.addClass("dndbi-cs-quick-btn");
 			b.addEventListener("click", () => {
 				if (d < 0) { const ft = Math.min(hpSt.temp,-d); hpSt.temp-=ft; hpSt.current=Math.max(0,hpSt.current-(-d-ft)); addHPLog(`⚔️ ${d} → ${hpSt.current} HP`); }
 				else if (d === 0) { hpSt.current=hpSt.max; addHPLog(`✨ Full rest → ${hpSt.max} HP`); }
@@ -2140,35 +1925,41 @@ class FullCharacterSheetModal extends Modal {
 
 		// temp HP row
 		const tmpRow = hpWrap.createEl("div");
-		tmpRow.style.cssText = "display:flex;gap:6px;align-items:center;";
-		const tmpLbl = tmpRow.createEl("span"); tmpLbl.setText("Temp HP:"); tmpLbl.style.cssText = "font-size:12px;color:var(--text-muted);white-space:nowrap;";
-		const tmpInput = tmpRow.createEl("input") as HTMLInputElement;
+		tmpRow.addClass("dndbi-cs-tmp-row");
+		const tmpLbl = tmpRow.createEl("span"); tmpLbl.setText("Temp HP:"); tmpLbl.addClass("dndbi-cs-tmp-lbl");
+		const tmpInput = tmpRow.createEl("input");
 		tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(hpSt.temp);
-		tmpInput.style.cssText = "width:60px;padding:5px 6px;font-size:13px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);text-align:center;";
-		const setTmpBtn = tmpRow.createEl("button"); setTmpBtn.setText("Set"); setTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:12px;cursor:pointer;";
+		tmpInput.addClass("dndbi-cs-tmp-input");
+		const setTmpBtn = tmpRow.createEl("button"); setTmpBtn.setText("Set");
+		setTmpBtn.addClass("dndbi-cs-tmp-set-btn");
 		setTmpBtn.addEventListener("click", () => { hpSt.temp = Math.max(0, parseInt(tmpInput.value,10)||0); addHPLog(`💙 Temp HP set to ${hpSt.temp}`); renderHP(); });
-		const clrTmpBtn = tmpRow.createEl("button"); clrTmpBtn.setText("Clear"); clrTmpBtn.style.cssText = "padding:5px 10px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
+		const clrTmpBtn = tmpRow.createEl("button"); clrTmpBtn.setText("Clear");
+		clrTmpBtn.addClass("dndbi-cs-tmp-clr-btn");
 		clrTmpBtn.addEventListener("click", () => { hpSt.temp=0; tmpInput.value="0"; addHPLog("💙 Temp HP cleared"); renderHP(); });
 
 		// death saves
 		const dsSect = hpWrap.createEl("div");
-		dsSect.style.cssText = "display:flex;gap:16px;align-items:center;flex-wrap:wrap;";
-		const dsSPips: HTMLElement[] = [];
-		const dsFPips: HTMLElement[] = [];
-		const makePips = (color: string, pips: HTMLElement[], get: () => number, set: (n:number) => void) => {
-			const grp = dsSect.createEl("div"); grp.style.cssText = "display:flex;align-items:center;gap:5px;";
-			for (let i=1;i<=3;i++) {
-				const p = grp.createEl("button") as HTMLButtonElement;
-				const idx = i;
-				p.style.cssText = `width:18px;height:18px;border-radius:50%;border:2px solid ${color};background:transparent;cursor:pointer;transition:background .15s;`;
-				p.addEventListener("click", () => { set(get()>=idx ? idx-1 : idx); renderHP(); });
+		dsSect.addClass("dndbi-cs-ds-sect");
+
+		const makePips = (
+			colorClass: "dndbi-cs-ds-pip--success" | "dndbi-cs-ds-pip--failure",
+			pips: HTMLElement[],
+			get: () => number,
+			set: (n: number) => void,
+		) => {
+			const grp = dsSect.createEl("div"); grp.addClass("dndbi-cs-ds-grp");
+			for (let i = 1; i <= 3; i++) {
+				const p = grp.createEl("button");
+				const pipIndex = i;
+				p.addClass("dndbi-cs-ds-pip", colorClass);
+				p.addEventListener("click", () => { set(get() >= pipIndex ? pipIndex - 1 : pipIndex); renderHP(); });
 				pips.push(p);
 			}
 		};
-		makePips("#4ade80", dsSPips, () => hpSt.dsS, (n) => { hpSt.dsS=n; });
-		makePips("#ef4444", dsFPips, () => hpSt.dsF, (n) => { hpSt.dsF=n; });
+		makePips("dndbi-cs-ds-pip--success", dsSPips, () => hpSt.dsS, (n) => { hpSt.dsS=n; });
+		makePips("dndbi-cs-ds-pip--failure", dsFPips, () => hpSt.dsF, (n) => { hpSt.dsF=n; });
 		const dsRstBtn = dsSect.createEl("button"); dsRstBtn.setText("Reset Saves");
-		dsRstBtn.style.cssText = "padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+		dsRstBtn.addClass("dndbi-cs-ds-rst-btn");
 		dsRstBtn.addEventListener("click", () => { hpSt.dsS=0; hpSt.dsF=0; addHPLog("🔄 Death saves reset"); renderHP(); });
 
 		renderHP();
@@ -2178,7 +1969,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const abilSection = this.sectionEl(mainCol, "Ability Scores");
 		const abilGrid = abilSection.createEl("div");
-		abilGrid.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+		abilGrid.addClass("dndbi-cs-abil-grid");
 
 		const abilDefs: Array<{ key: keyof typeof stats; label: string }> = [
 			{ key: "str", label: "STR" }, { key: "dex", label: "DEX" },
@@ -2190,14 +1981,14 @@ class FullCharacterSheetModal extends Modal {
 			const score = stats[key];
 			const modNum = this.mod(score);
 			const card = abilGrid.createEl("div");
-			card.style.cssText = "display:flex;flex-direction:column;align-items:center;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 14px;min-width:72px;cursor:pointer;transition:border-color .15s;";
-			card.addEventListener("mouseenter", () => { card.style.borderColor = "var(--interactive-accent)"; });
-			card.addEventListener("mouseleave", () => { card.style.borderColor = "var(--background-modifier-border)"; });
+			card.addClass("dndbi-cs-abil-card");
+			card.addEventListener("mouseenter", () => { card.addClass("dndbi-cs-abil-card--hover"); });
+			card.addEventListener("mouseleave", () => { card.removeClass("dndbi-cs-abil-card--hover"); });
 			card.addEventListener("click", () => this.rollD20(modNum, `${label} Check`));
-			const lbl = card.createEl("div"); lbl.setText(label); lbl.style.cssText = "font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;";
-			const scoreEl = card.createEl("div"); scoreEl.setText(String(score)); scoreEl.style.cssText = "font-size:22px;font-weight:900;line-height:1.1;";
-			const modEl = card.createEl("div"); modEl.setText(this.modStr(modNum)); modEl.style.cssText = "font-size:13px;color:var(--interactive-accent);font-weight:700;";
-			const hint = card.createEl("div"); hint.setText("click to roll"); hint.style.cssText = "font-size:9px;color:var(--text-faint);margin-top:2px;";
+			const lbl = card.createEl("div"); lbl.setText(label); lbl.addClass("dndbi-cs-abil-lbl");
+			const scoreEl = card.createEl("div"); scoreEl.setText(String(score)); scoreEl.addClass("dndbi-cs-abil-score");
+			const modEl = card.createEl("div"); modEl.setText(this.modStr(modNum)); modEl.addClass("dndbi-cs-abil-mod");
+			const hint = card.createEl("div"); hint.setText("click to roll"); hint.addClass("dndbi-cs-abil-hint");
 		}
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2205,7 +1996,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const saveSection = this.sectionEl(mainCol, "Saving Throws");
 		const saveGrid = saveSection.createEl("div");
-		saveGrid.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:6px;";
+		saveGrid.addClass("dndbi-cs-save-grid");
 
 		const saveDefs: Array<{ key: keyof typeof stats; label: string; subType: string }> = [
 			{ key: "str", label: "Strength",     subType: "strength-saving-throws" },
@@ -2220,10 +2011,12 @@ class FullCharacterSheetModal extends Modal {
 			const isProficient = allMods.some((m) => m.type === "proficiency" && m.subType === subType);
 			const modNum = this.mod(stats[key]) + (isProficient ? pb : 0);
 			const row = saveGrid.createEl("div");
-			row.style.cssText = "display:flex;align-items:center;justify-content:space-between;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:6px;padding:6px 10px;";
-			const left = row.createEl("div"); left.style.cssText = "display:flex;align-items:center;gap:6px;";
-			const dot = left.createEl("span"); dot.setText(isProficient ? "●" : "○"); dot.style.cssText = `color:${isProficient ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;`;
-			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.style.cssText = "font-size:12px;";
+			row.addClass("dndbi-cs-save-row");
+			const left = row.createEl("div"); left.addClass("dndbi-cs-save-left");
+			const dot = left.createEl("span");
+			dot.setText(isProficient ? "●" : "○");
+			dot.addClass(isProficient ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
+			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.addClass("dndbi-cs-save-lbl");
 			this.rollBtn(row, `${label} Save`, modNum);
 		}
 
@@ -2232,7 +2025,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const skillSection = this.sectionEl(mainCol, "Skills");
 		const skillGrid = skillSection.createEl("div");
-		skillGrid.style.cssText = "display:grid;grid-template-columns:repeat(2,1fr);gap:5px;";
+		skillGrid.addClass("dndbi-cs-skill-grid");
 
 		const skillDefs: Array<{ label: string; key: keyof typeof stats; subType: string }> = [
 			{ label: "Acrobatics",     key: "dex", subType: "acrobatics" },
@@ -2260,12 +2053,12 @@ class FullCharacterSheetModal extends Modal {
 			const isExpertise  = allMods.some((m) => m.type === "expertise"   && m.subType === subType);
 			const bonus = this.mod(stats[key]) + (isExpertise ? pb * 2 : isProficient ? pb : 0);
 			const row = skillGrid.createEl("div");
-			row.style.cssText = "display:flex;align-items:center;justify-content:space-between;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:5px;padding:5px 8px;";
-			const left = row.createEl("div"); left.style.cssText = "display:flex;align-items:center;gap:5px;";
+			row.addClass("dndbi-cs-skill-row");
+			const left = row.createEl("div"); left.addClass("dndbi-cs-save-left");
 			const dot = left.createEl("span");
 			dot.setText(isExpertise ? "★" : isProficient ? "●" : "○");
-			dot.style.cssText = `color:${isExpertise ? "#f59e0b" : isProficient ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;`;
-			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.style.cssText = "font-size:12px;";
+			dot.addClass(isExpertise ? "dndbi-cs-dot--expert" : isProficient ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
+			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.addClass("dndbi-cs-skill-lbl");
 			this.rollBtn(row, `${label} Check`, bonus);
 		}
 
@@ -2277,18 +2070,18 @@ class FullCharacterSheetModal extends Modal {
 			const actSection = this.sectionEl(mainCol, "Actions & Attacks");
 			for (const action of actions) {
 				const row = actSection.createEl("div");
-				row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:6px;padding:8px 12px;margin-bottom:6px;";
+				row.addClass("dndbi-cs-action-row");
 				const nameEl = row.createEl("span");
 				nameEl.setText(`${action.isSpell ? "✨" : "⚔️"} ${action.name}`);
-				nameEl.style.cssText = "flex:1;font-size:13px;font-weight:600;";
+				nameEl.addClass("dndbi-cs-action-name");
 				if (action.notes) {
 					const notesEl = row.createEl("span"); notesEl.setText(action.notes);
-					notesEl.style.cssText = "font-size:11px;color:var(--text-muted);";
+					notesEl.addClass("dndbi-cs-action-notes");
 				}
 				if (action.attackBonus != null) {
 					const atkBtn = row.createEl("button");
 					atkBtn.setText(`🎲 ATK ${this.modStr(action.attackBonus)}`);
-					atkBtn.style.cssText = "padding:4px 10px;border-radius:5px;border:none;background:var(--interactive-accent);color:var(--text-on-accent);font-size:12px;font-weight:700;cursor:pointer;";
+					atkBtn.addClass("dndbi-cs-atk-btn");
 					atkBtn.addEventListener("click", () => this.rollD20(action.attackBonus!, `${action.name} Attack`));
 				}
 				const hasDmg = action.damageDice != null || action.damageBonus !== 0;
@@ -2296,22 +2089,24 @@ class FullCharacterSheetModal extends Modal {
 					const dmgStr = action.damageDice
 						? `${action.damageDice}${action.damageBonus !== 0 ? this.modStr(action.damageBonus) : ""}`
 						: `${action.damageBonus}`;
-					const dmgBtn = row.createEl("button");
-					dmgBtn.setText(`🎲 DMG ${dmgStr}`);
-					dmgBtn.style.cssText = "padding:4px 10px;border-radius:5px;border:none;background:#ef4444;color:#fff;font-size:12px;font-weight:700;cursor:pointer;";
-					dmgBtn.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
+					const dmgBtnEl = row.createEl("button");
+					dmgBtnEl.setText(`🎲 DMG ${dmgStr}`);
+					dmgBtnEl.addClass("dndbi-cs-dmg-action-btn");
+					dmgBtnEl.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
 
 					// 5etools weapon lookup
 					if (this.plugin.settings.fiveEtoolsEnabled) {
 						const infoBtn = row.createEl("button"); infoBtn.setText("📖");
 						infoBtn.title = "Fetch from 5etools";
-						infoBtn.style.cssText = "padding:4px 8px;border-radius:5px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:12px;cursor:pointer;";
-						infoBtn.addEventListener("click", async () => {
-							infoBtn.setText("⏳"); infoBtn.disabled = true;
-							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", action.name);
-							infoBtn.setText("📖"); infoBtn.disabled = false;
-							if (!entry) { new Notice(`No 5etools entry found for "${action.name}"`, 2000); return; }
-							new FiveEDataModal(this.app, action.name, render5eDescription(entry)).open();
+						infoBtn.addClass("dndbi-cs-info-btn");
+						infoBtn.addEventListener("click", () => {
+							void (async () => {
+								infoBtn.setText("⏳"); infoBtn.disabled = true;
+								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", action.name);
+								infoBtn.setText("📖"); infoBtn.disabled = false;
+								if (!entry) { new Notice(`No 5etools entry found for "${action.name}"`, 2000); return; }
+								new FiveEDataModal(this.app, action.name, render5eDescription(entry)).open();
+							})();
 						});
 					}
 				}
@@ -2329,7 +2124,7 @@ class FullCharacterSheetModal extends Modal {
 				const slotSection = this.sectionEl(mainCol, "Spell Slots");
 				const slotKey = `dnd-slots-${char.id}`;
 				const loadSlots = (): Record<number, number> => {
-					try { return JSON.parse(this.plugin.sessionState.get(slotKey) ?? "null") ?? {}; } catch { return {}; }
+					try { return JSON.parse(this.plugin.sessionState.get(slotKey) ?? "null") as Record<number, number> ?? {}; } catch { return {}; }
 				};
 				const saveSlots = (d: Record<number, number>) => this.plugin.sessionState.set(slotKey, JSON.stringify(d));
 				let usedSlots: Record<number, number> = loadSlots();
@@ -2338,23 +2133,24 @@ class FullCharacterSheetModal extends Modal {
 					const lvl = slot.level ?? 0;
 					const maxPips = slot.max ?? 0;
 					const slotRow = slotSection.createEl("div");
-					slotRow.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:8px;";
+					slotRow.addClass("dndbi-cs-slot-row");
 					const lvlLbl = slotRow.createEl("span"); lvlLbl.setText(`Level ${lvl}`);
-					lvlLbl.style.cssText = "font-size:12px;color:var(--text-muted);width:52px;flex-shrink:0;";
-					const pipsEl = slotRow.createEl("div"); pipsEl.style.cssText = "display:flex;gap:5px;";
-					const restBtn = slotRow.createEl("button"); restBtn.setText("Rest"); restBtn.style.cssText = "margin-left:auto;padding:3px 8px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;";
+					lvlLbl.addClass("dndbi-cs-slot-lbl");
+					const pipsEl = slotRow.createEl("div"); pipsEl.addClass("dndbi-cs-slot-pips");
+					const restBtn = slotRow.createEl("button"); restBtn.setText("Rest");
+					restBtn.addClass("dndbi-cs-slot-rest-btn");
 
 					const renderPips = () => {
 						pipsEl.empty();
 						const used = usedSlots[lvl] ?? 0;
 						for (let i = 0; i < maxPips; i++) {
-							const pip = pipsEl.createEl("button") as HTMLButtonElement;
+							const pip = pipsEl.createEl("button");
 							const isUsed = i < used;
-							pip.style.cssText = `width:18px;height:18px;border-radius:50%;border:2px solid var(--interactive-accent);background:${isUsed ? "var(--background-modifier-border)" : "var(--interactive-accent)"};cursor:pointer;transition:background .15s;`;
-							const idx = i;
+							pip.addClass("dndbi-cs-spell-pip");
+							pip.toggleClass("dndbi-cs-spell-pip--used", isUsed);
+							const pipI = i;
 							pip.addEventListener("click", () => {
 								const cur = usedSlots[lvl] ?? 0;
-								// clicking a used pip restores it; clicking unused marks it used
 								usedSlots[lvl] = isUsed ? Math.max(0, cur - 1) : Math.min(maxPips, cur + 1);
 								saveSlots(usedSlots); renderPips();
 							});
@@ -2388,45 +2184,48 @@ class FullCharacterSheetModal extends Modal {
 
 			for (const [lvl, spells] of [...byLevel.entries()].sort((a,b) => a[0]-b[0])) {
 				const lvlHdr = spellSection.createEl("div"); lvlHdr.setText(levelNames[lvl] ?? `Level ${lvl}`);
-				lvlHdr.style.cssText = "font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin:8px 0 4px 0;";
+				lvlHdr.addClass("dndbi-cs-spell-lvl-hdr");
 				for (const spell of spells) {
 					const def = spell.definition; if (!def) continue;
 					const sRow = spellSection.createEl("div");
-					sRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;margin-bottom:3px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);cursor:pointer;transition:border-color .15s;";
-					sRow.addEventListener("mouseenter", () => { sRow.style.borderColor = "var(--interactive-accent)"; });
-					sRow.addEventListener("mouseleave", () => { sRow.style.borderColor = "var(--background-modifier-border)"; });
+					sRow.addClass("dndbi-cs-spell-row");
+					sRow.addEventListener("mouseenter", () => { sRow.addClass("dndbi-cs-spell-row--hover"); });
+					sRow.addEventListener("mouseleave", () => { sRow.removeClass("dndbi-cs-spell-row--hover"); });
 
 					const prepDot = sRow.createEl("span"); prepDot.setText(spell.prepared ? "●" : "○");
-					prepDot.style.cssText = `color:${spell.prepared ? "var(--interactive-accent)" : "var(--text-faint)"};font-size:10px;flex-shrink:0;`;
+					prepDot.addClass(spell.prepared ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
+					prepDot.addClass("dndbi-cs-spell-prep-dot");
 					const spellName = sRow.createEl("span"); spellName.setText(def.name ?? "Unknown");
-					spellName.style.cssText = "flex:1;font-size:13px;font-weight:600;";
+					spellName.addClass("dndbi-cs-spell-name");
 					const school = sRow.createEl("span"); school.setText(def.school ?? "");
-					school.style.cssText = "font-size:11px;color:var(--text-muted);";
+					school.addClass("dndbi-cs-spell-school");
 					if (def.concentration) {
-						const conc = sRow.createEl("span"); conc.setText("C"); conc.style.cssText = "font-size:10px;color:#f59e0b;font-weight:700;border:1px solid #f59e0b;border-radius:3px;padding:0 3px;";
+						const conc = sRow.createEl("span"); conc.setText("C");
+						conc.addClass("dndbi-cs-spell-conc");
 					}
 
-					// Expand/5etools on click
 					const descEl = spellSection.createEl("div");
-					descEl.style.cssText = "display:none;padding:8px 12px;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-top:none;border-radius:0 0 5px 5px;font-size:12px;color:var(--text-normal);white-space:pre-wrap;margin-bottom:4px;";
+					descEl.addClass("dndbi-cs-spell-desc");
 					let expanded = false;
 					let fetched = false;
 
-					sRow.addEventListener("click", async () => {
-						expanded = !expanded;
-						descEl.style.display = expanded ? "block" : "none";
-						if (expanded && !fetched) {
-							fetched = true;
-							if (def.description) {
-								descEl.setText(stripHtml(def.description));
-							} else if (this.plugin.settings.fiveEtoolsEnabled) {
-								descEl.setText("⏳ Fetching from 5etools…");
-								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "spells", def.name ?? "");
-								descEl.setText(entry ? render5eDescription(entry) : "No description available.");
-							} else {
-								descEl.setText("No description available. Enable 5etools integration in settings to fetch spell descriptions.");
+					sRow.addEventListener("click", () => {
+						void (async () => {
+							expanded = !expanded;
+							descEl.toggleClass("dndbi-cs-spell-desc--open", expanded);
+							if (expanded && !fetched) {
+								fetched = true;
+								if (def.description) {
+									descEl.setText(stripHtml(def.description));
+								} else if (this.plugin.settings.fiveEtoolsEnabled) {
+									descEl.setText("⏳ Fetching from 5etools…");
+									const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "spells", def.name ?? "");
+									descEl.setText(entry ? render5eDescription(entry) : "No description available.");
+								} else {
+									descEl.setText("No description available. Enable 5etools integration in settings to fetch spell descriptions.");
+								}
 							}
-						}
+						})();
 					});
 				}
 			}
@@ -2439,46 +2238,48 @@ class FullCharacterSheetModal extends Modal {
 		if (inventory.length) {
 			const eqSection = this.sectionEl(mainCol, "Equipment");
 			const eqKey = `dnd-eq-${char.id}`;
-			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(this.plugin.sessionState.get(eqKey) ?? "null") ?? {}; } catch { return {}; } };
+			const loadEq = (): Record<string, boolean> => { try { return JSON.parse(this.plugin.sessionState.get(eqKey) ?? "null") as Record<string, boolean> ?? {}; } catch { return {}; } };
 			const saveEq = (d: Record<string, boolean>) => this.plugin.sessionState.set(eqKey, JSON.stringify(d));
 			let eqState: Record<string, boolean> = loadEq();
 
 			for (const item of inventory) {
 				const def = item.definition; if (!def) continue;
-				const key = (def.name ?? "unknown").toLowerCase().replace(/\s+/g, "-");
-				if (!(key in eqState)) eqState[key] = item.equipped ?? false;
+				const itemKey = (def.name ?? "unknown").toLowerCase().replace(/\s+/g, "-");
+				if (!(itemKey in eqState)) eqState[itemKey] = item.equipped ?? false;
 
 				const iRow = eqSection.createEl("div");
-				iRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;margin-bottom:3px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);";
-				const toggle = iRow.createEl("button") as HTMLButtonElement;
+				iRow.addClass("dndbi-cs-eq-row");
+				const toggle = iRow.createEl("button");
 				const renderToggle = () => {
-					toggle.setText(eqState[key] ? "⚔️" : "🎒");
-					toggle.title = eqState[key] ? "Equipped — click to unequip" : "Unequipped — click to equip";
-					iRow.style.opacity = eqState[key] ? "1" : "0.55";
+					toggle.setText(eqState[itemKey] ? "⚔️" : "🎒");
+					toggle.title = eqState[itemKey] ? "Equipped — click to unequip" : "Unequipped — click to equip";
+					iRow.toggleClass("dndbi-cs-eq-row--unequipped", !eqState[itemKey]);
 				};
-				toggle.style.cssText = "border:none;background:transparent;cursor:pointer;font-size:16px;padding:0;line-height:1;";
-				toggle.addEventListener("click", () => { eqState[key] = !eqState[key]; saveEq(eqState); renderToggle(); });
+				toggle.addClass("dndbi-cs-eq-toggle");
+				toggle.addEventListener("click", () => { eqState[itemKey] = !eqState[itemKey]; saveEq(eqState); renderToggle(); });
 				renderToggle();
 
 				const itemName = iRow.createEl("span"); itemName.setText(def.name ?? "Unknown");
-				itemName.style.cssText = "flex:1;font-size:13px;";
+				itemName.addClass("dndbi-cs-eq-name");
 				const qty = iRow.createEl("span"); qty.setText(`×${item.quantity ?? 1}`);
-				qty.style.cssText = "font-size:12px;color:var(--text-muted);";
+				qty.addClass("dndbi-cs-eq-qty");
 				if (def.weight) {
 					const wt = iRow.createEl("span"); wt.setText(`${def.weight} lb`);
-					wt.style.cssText = "font-size:11px;color:var(--text-faint);";
+					wt.addClass("dndbi-cs-eq-wt");
 				}
 
 				// 5etools item lookup
 				if (this.plugin.settings.fiveEtoolsEnabled) {
 					const infoBtn = iRow.createEl("button"); infoBtn.setText("📖"); infoBtn.title = "Fetch from 5etools";
-					infoBtn.style.cssText = "border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);border-radius:4px;font-size:12px;cursor:pointer;padding:2px 6px;";
-					infoBtn.addEventListener("click", async () => {
-						infoBtn.setText("⏳"); infoBtn.disabled = true;
-						const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", def.name ?? "");
-						infoBtn.setText("📖"); infoBtn.disabled = false;
-						if (!entry) { new Notice(`No 5etools entry for "${def.name}"`, 2000); return; }
-						new FiveEDataModal(this.app, def.name ?? "Item", render5eDescription(entry)).open();
+					infoBtn.addClass("dndbi-cs-info-btn");
+					infoBtn.addEventListener("click", () => {
+						void (async () => {
+							infoBtn.setText("⏳"); infoBtn.disabled = true;
+							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", def.name ?? "");
+							infoBtn.setText("📖"); infoBtn.disabled = false;
+							if (!entry) { new Notice(`No 5etools entry for "${def.name}"`, 2000); return; }
+							new FiveEDataModal(this.app, def.name ?? "Item", render5eDescription(entry)).open();
+						})();
 					});
 				}
 			}
@@ -2495,45 +2296,51 @@ class FullCharacterSheetModal extends Modal {
 
 			const makeFeat = (name: string, rawDesc: string | undefined, fetchType: "classfeature" | "races") => {
 				const card = featSection.createEl("div");
-				card.style.cssText = "border:1px solid var(--background-modifier-border);border-radius:6px;margin-bottom:6px;overflow:hidden;";
+				card.addClass("dndbi-cs-feat-card");
 				const hdr = card.createEl("div");
-				hdr.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;background:var(--background-secondary);";
-				const _hdrSpan = hdr.createEl("span"); _hdrSpan.setText(name); _hdrSpan.style.cssText = "font-size:13px;font-weight:600;";
-				const chevron = hdr.createEl("span"); chevron.setText("▶"); chevron.style.cssText = "color:var(--text-muted);font-size:10px;transition:transform .2s;";
+				hdr.addClass("dndbi-cs-feat-hdr");
+				const hdrSpan = hdr.createEl("span"); hdrSpan.setText(name); hdrSpan.addClass("dndbi-cs-feat-hdr-name");
+				const chevron = hdr.createEl("span"); chevron.setText("▶"); chevron.addClass("dndbi-cs-feat-chevron");
 
 				const body = card.createEl("div");
-				body.style.cssText = "display:none;padding:10px 12px;font-size:12px;color:var(--text-normal);white-space:pre-wrap;background:var(--background-primary);";
+				body.addClass("dndbi-cs-feat-body");
 
 				let expanded = false; let fetched = false;
 
-				hdr.addEventListener("click", async () => {
-					expanded = !expanded;
-					body.style.display = expanded ? "block" : "none";
-					chevron.style.transform = expanded ? "rotate(90deg)" : "none";
-					if (expanded && !fetched) {
-						fetched = true;
-						if (rawDesc) {
-							body.setText(stripHtml(rawDesc));
-						} else if (this.plugin.settings.fiveEtoolsEnabled) {
-							body.setText("⏳ Fetching from 5etools…");
-							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
-							body.setText(entry ? render5eDescription(entry) : "No description available.");
-						} else {
-							body.setText("Enable 5etools integration in settings to fetch descriptions.");
+				hdr.addEventListener("click", () => {
+					void (async () => {
+						expanded = !expanded;
+						body.toggleClass("dndbi-cs-feat-body--open", expanded);
+						chevron.toggleClass("dndbi-cs-feat-chevron--open", expanded);
+						if (expanded && !fetched) {
+							fetched = true;
+							if (rawDesc) {
+								body.setText(stripHtml(rawDesc));
+							} else if (this.plugin.settings.fiveEtoolsEnabled) {
+								body.setText("⏳ Fetching from 5etools…");
+								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+								body.setText(entry ? render5eDescription(entry) : "No description available.");
+							} else {
+								body.setText("Enable 5etools integration in settings to fetch descriptions.");
+							}
 						}
-					}
+					})();
 				});
 
 				if (this.plugin.settings.fiveEtoolsEnabled) {
 					const fetchBtn = hdr.createEl("button"); fetchBtn.setText("📖"); fetchBtn.title = "Refresh from 5etools";
-					fetchBtn.style.cssText = "border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 5px;margin-left:8px;";
-					fetchBtn.addEventListener("click", async (e) => {
+					fetchBtn.addClass("dndbi-cs-feat-fetch-btn");
+					fetchBtn.addEventListener("click", (e) => {
 						e.stopPropagation();
-						fetchBtn.setText("⏳"); fetchBtn.disabled = true;
-						const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
-						fetchBtn.setText("📖"); fetchBtn.disabled = false;
-						body.setText(entry ? render5eDescription(entry) : "No entry found.");
-						body.style.display = "block"; expanded = true; chevron.style.transform = "rotate(90deg)";
+						void (async () => {
+							fetchBtn.setText("⏳"); fetchBtn.disabled = true;
+							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+							fetchBtn.setText("📖"); fetchBtn.disabled = false;
+							body.setText(entry ? render5eDescription(entry) : "No entry found.");
+							body.addClass("dndbi-cs-feat-body--open");
+							expanded = true;
+							chevron.addClass("dndbi-cs-feat-chevron--open");
+						})();
 					});
 				}
 			};
@@ -2553,7 +2360,7 @@ class FullCharacterSheetModal extends Modal {
 		for (const cls of char.classes ?? []) {
 			const className = cls.definition?.name ?? "Unknown";
 			const clsHdr = classFeatureSection.createEl("div"); clsHdr.setText(`${className} (Level ${cls.level ?? 0})`);
-			clsHdr.style.cssText = "font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin:6px 0 4px 0;";
+			clsHdr.addClass("dndbi-cs-cls-hdr");
 		}
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2561,10 +2368,10 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const notesSection = this.sectionEl(mainCol, "Session Notes");
 		const notesKey = `dnd-notes-${char.id}`;
-		const notesArea = notesSection.createEl("textarea") as HTMLTextAreaElement;
+		const notesArea = notesSection.createEl("textarea");
 		notesArea.value = this.plugin.sessionState.get(notesKey) ?? "";
 		notesArea.placeholder = "Add your session notes here…";
-		notesArea.style.cssText = "width:100%;min-height:100px;padding:8px;border-radius:6px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);font-size:13px;font-family:var(--font-text);resize:vertical;box-sizing:border-box;";
+		notesArea.addClass("dndbi-cs-notes-area");
 		notesArea.addEventListener("input", () => this.plugin.sessionState.set(notesKey, notesArea.value));
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2572,10 +2379,10 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const rollSection = this.sectionEl(sideCol, "Roll Log");
 		const clearRollBtn = rollSection.createEl("button"); clearRollBtn.setText("Clear");
-		clearRollBtn.style.cssText = "float:right;padding:2px 7px;border-radius:4px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-muted);font-size:11px;cursor:pointer;margin-top:-24px;";
+		clearRollBtn.addClass("dndbi-cs-roll-clr-btn");
 		clearRollBtn.addEventListener("click", () => { this.rollLog = []; this.refreshRollLog(); });
 		const rollLogContainer = rollSection.createEl("div");
-		rollLogContainer.style.cssText = "max-height:220px;overflow-y:auto;";
+		rollLogContainer.addClass("dndbi-cs-roll-log");
 		this.rollLogEl = rollLogContainer;
 		this.refreshRollLog();
 
@@ -2583,17 +2390,17 @@ class FullCharacterSheetModal extends Modal {
 		const curr = char.currencies;
 		if (curr) {
 			const currSection = this.sectionEl(sideCol, "Currency");
-			const currRow = currSection.createEl("div"); currRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
-			const coin = (lbl: string, val: number, color: string) => {
-				const c = currRow.createEl("div"); c.style.cssText = `display:flex;flex-direction:column;align-items:center;background:var(--background-primary);border:1px solid ${color};border-radius:6px;padding:6px 10px;min-width:44px;`;
-				const _cv = c.createEl("span"); _cv.setText(String(val)); _cv.style.cssText = "font-size:16px;font-weight:700;";
-				const _cl = c.createEl("span"); _cl.setText(lbl); _cl.style.cssText = `font-size:10px;color:${color};font-weight:700;`;
+			const currRow = currSection.createEl("div"); currRow.addClass("dndbi-cs-curr-row");
+			const coin = (lbl: string, val: number, colorClass: string) => {
+				const c = currRow.createEl("div"); c.addClass("dndbi-cs-coin", colorClass);
+				const cv = c.createEl("span"); cv.setText(String(val)); cv.addClass("dndbi-cs-coin-val");
+				const cl = c.createEl("span"); cl.setText(lbl); cl.addClass("dndbi-cs-coin-lbl");
 			};
-			coin("CP", curr.cp ?? 0, "#a16207");
-			coin("SP", curr.sp ?? 0, "#6b7280");
-			coin("EP", curr.ep ?? 0, "#0891b2");
-			coin("GP", curr.gp ?? 0, "#d97706");
-			coin("PP", curr.pp ?? 0, "#7c3aed");
+			coin("CP", curr.cp ?? 0, "dndbi-cs-coin--cp");
+			coin("SP", curr.sp ?? 0, "dndbi-cs-coin--sp");
+			coin("EP", curr.ep ?? 0, "dndbi-cs-coin--ep");
+			coin("GP", curr.gp ?? 0, "dndbi-cs-coin--gp");
+			coin("PP", curr.pp ?? 0, "dndbi-cs-coin--pp");
 		}
 
 		// Proficiencies & Languages
@@ -2603,17 +2410,17 @@ class FullCharacterSheetModal extends Modal {
 			.map((m) => m.friendlySubtypeName ?? "")
 			.filter((v, i, a) => v && a.indexOf(v) === i);
 		if (profNames.length) {
-			const profList = profSection.createEl("div"); profList.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+			const profList = profSection.createEl("div"); profList.addClass("dndbi-cs-prof-list");
 			profNames.forEach((p) => {
 				const chip = profList.createEl("span"); chip.setText(p);
-				chip.style.cssText = "background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:12px;padding:2px 8px;font-size:11px;color:var(--text-normal);";
+				chip.addClass("dndbi-cs-prof-chip");
 			});
 		}
 
 		// 5etools status badge
 		if (this.plugin.settings.fiveEtoolsEnabled) {
 			const badge = sideCol.createEl("div");
-			badge.style.cssText = "margin-top:auto;padding:8px;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:6px;font-size:11px;color:var(--text-muted);text-align:center;";
+			badge.addClass("dndbi-cs-5e-badge");
 			badge.setText(`📖 5etools: ${this.plugin.settings.fiveEtoolsBaseUrl}`);
 		}
 	}
@@ -2634,8 +2441,7 @@ class FiveEDataModal extends Modal {
 	}
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
-		const pre = this.contentEl.createEl("div");
-		pre.style.cssText = "white-space:pre-wrap;font-size:13px;color:var(--text-normal);max-height:400px;overflow-y:auto;";
+		const pre = this.contentEl.createEl("div", { cls: "dndbi-5e-modal-content" });
 		pre.setText(this.content);
 	}
 	onClose(): void { this.contentEl.empty(); }
@@ -2663,9 +2469,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Characters")
 					.setValue(this.plugin.settings.outputFolder)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.outputFolder = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2675,9 +2481,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.includeSpells)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.includeSpells = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2687,9 +2493,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.includeEquipment)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.includeEquipment = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2699,9 +2505,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.includeFeatures)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.includeFeatures = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2711,9 +2517,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.includeBackstory)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.includeBackstory = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2724,9 +2530,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.fiveEtoolsEnabled)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.fiveEtoolsEnabled = value;
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -2737,9 +2543,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("https://5e.tools")
 					.setValue(this.plugin.settings.fiveEtoolsBaseUrl)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.fiveEtoolsBaseUrl = value.trim();
-						await this.plugin.saveSettings();
+						void this.plugin.saveSettings();
 					})
 			);
 	}

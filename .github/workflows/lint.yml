@@ -1,0 +1,29 @@
+name: Run Obsidian Linter Check
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: |
+          npm install typescript@latest @typescript-eslint/parser @typescript-eslint/eslint-plugin eslint eslint-plugin-obsidianmd --save-dev --legacy-peer-deps
+
+      - name: Create Temporary Config
+        run: |
+          echo 'import tsparser from "@typescript-eslint/parser";' > eslint.config.mjs
+          echo 'import obsidianmd from "eslint-plugin-obsidianmd";' >> eslint.config.mjs
+          echo 'export default [{ files: ["**/*.ts"], plugins: { obsidianmd }, rules: { ...obsidianmd.configs.recommended.rules }, languageOptions: { parser: tsparser, parserOptions: { project: "./tsconfig.json" } } }];' >> eslint.config.mjs
+
+      - name: Run Linter
+        run: npx eslint .
