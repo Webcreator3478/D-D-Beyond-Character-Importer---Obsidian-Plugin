@@ -892,8 +892,11 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 }
 
 // ── HP Tracker Code Block Processor ───────────────────────────────────────
-const self = this as unknown as { sessionState: Map<string, string>; };
-this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
+const self = this as unknown as {
+	sessionState: Map<string, string>;
+	registerMarkdownCodeBlockProcessor: (name: string, cb: (source: string, el: HTMLElement) => void) => void;
+};
+self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
 		const parts = line.split(":");
@@ -1048,8 +1051,9 @@ const self2 = this as unknown as {
 	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }>;
 	importCharacter: (id: string) => Promise<void>;
 	app: App;
+	registerMarkdownCodeBlockProcessor: (name: string, cb: (source: string, el: HTMLElement) => void) => void;
 };
-this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
+self2.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
 	const params: Record<string, string> = {};
 	for (const line of source.split("\n")) {
 		const parts = line.split(":");
