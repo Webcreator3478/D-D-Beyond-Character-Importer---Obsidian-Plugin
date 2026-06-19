@@ -959,7 +959,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
 	const amtInput = dmgRow.createEl<HTMLInputElement>("input", { cls: "dndbi-hp-amt-input" });
 	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-	const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
+	const getAmt = () => Math.max(0, parseInt((amtInput as HTMLInputElement).value, 10) || 0);
 
 	const dmgBtn = dmgRow.createEl("button", { cls: "dndbi-hp-dmg-btn" });
 	dmgBtn.setText("⚔️ Damage");
@@ -997,7 +997,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
 	setTmpBtn.setText("Set");
 	setTmpBtn.addEventListener("click", () => {
-		state.temp=Math.max(0,parseInt(tmpInput.value,10)||0);
+		state.temp = Math.max(0, parseInt((tmpInput as HTMLInputElement).value, 10) || 0);
 		addLog(`💙 Temp HP set to ${state.temp}`); render();
 	});
 	const clrTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-clr-btn" });
@@ -1021,7 +1021,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 		for (let i = 1; i <= 3; i++) {
 			const p = grp.createEl<HTMLButtonElement>("button", { cls: `dndbi-hp-ds-pip ${flavour}` });
 			const idx = i;
-			p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
+			p.addEventListener("click", () => { (set as (val: number) => void)((get as () => number)() >= idx ? idx - 1 : idx); render(); });
 			pips.push(p);
 		}
 	};
@@ -1219,11 +1219,11 @@ class HPTrackerModal extends Modal {
 		const tempEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-temp" });
 
 		const updateDisplay = () => {
-			const total = tracker!.currentHp + tracker!.tempHp;
-			hpTextEl.setText(`${total}/${tracker!.maxHp} HP`);
-			tempEl.setText(tracker!.tempHp > 0 ? `Temp: ${tracker!.tempHp}` : "");
+			const total = tracker.currentHp + tracker.tempHp;
+			hpTextEl.setText(`${total}/${tracker.maxHp} HP`);
+			tempEl.setText(tracker.tempHp > 0 ? `Temp: ${tracker.tempHp}` : "");
 
-			const newPercent = Math.max(0, (tracker!.currentHp / tracker!.maxHp) * 100);
+			const newPercent = Math.max(0, (tracker.currentHp / tracker.maxHp) * 100);
 			hpFillEl.setCssStyles({ width: `${newPercent}%` });
 			hpFillEl.removeClass("dndbi-hpmodal-bar-fill--high", "dndbi-hpmodal-bar-fill--mid", "dndbi-hpmodal-bar-fill--low");
 			if (newPercent > 50) {
@@ -1248,35 +1248,35 @@ class HPTrackerModal extends Modal {
 		currentInputEl.min = "0";
 		currentInputEl.max = String(tracker.maxHp);
 		currentInputEl.addEventListener("change", () => {
-			tracker!.currentHp = Math.max(0, Math.min(tracker!.maxHp, Number(currentInputEl.value)));
+			tracker.currentHp = Math.max(0, Math.min(tracker.maxHp, Number(currentInputEl.value)));
 			updateDisplay();
 		});
 
 		const minusBtn = currentCtrlEl.createEl("button", { text: "−5", cls: "dndbi-hpmodal-step-btn" });
 		minusBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.max(0, tracker!.currentHp - 5);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.max(0, tracker.currentHp - 5);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1", cls: "dndbi-hpmodal-step-btn" });
 		minusOneBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.max(0, tracker!.currentHp - 1);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.max(0, tracker.currentHp - 1);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1", cls: "dndbi-hpmodal-step-btn" });
 		plusOneBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 1);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 1);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5", cls: "dndbi-hpmodal-step-btn" });
 		plusFiveBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 5);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 5);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
@@ -1292,13 +1292,13 @@ class HPTrackerModal extends Modal {
 		tempInputEl.value = String(tracker.tempHp);
 		tempInputEl.min = "0";
 		tempInputEl.addEventListener("change", () => {
-			tracker!.tempHp = Math.max(0, Number(tempInputEl.value));
+			tracker.tempHp = Math.max(0, Number(tempInputEl.value));
 			updateDisplay();
 		});
 
 		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear", cls: "dndbi-hpmodal-step-btn" });
 		tempClearBtn.addEventListener("click", () => {
-			tracker!.tempHp = 0;
+			tracker.tempHp = 0;
 			tempInputEl.value = "0";
 			updateDisplay();
 		});
@@ -1315,9 +1315,9 @@ class HPTrackerModal extends Modal {
 		maxInputEl.value = String(tracker.maxHp);
 		maxInputEl.min = "1";
 		maxInputEl.addEventListener("change", () => {
-			tracker!.maxHp = Math.max(1, Number(maxInputEl.value));
-			tracker!.currentHp = Math.min(tracker!.currentHp, tracker!.maxHp);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.maxHp = Math.max(1, Number(maxInputEl.value));
+			tracker.currentHp = Math.min(tracker.currentHp, tracker.maxHp);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
@@ -1407,7 +1407,7 @@ class DiceRollerModal extends Modal {
 
 		const filterLabel = controlsEl.createEl("label", { cls: "dndbi-dice-filter-label" });
 		filterLabel.setText("Filter:");
-		const filterSelect = filterLabel.createEl("select", { cls: "dndbi-dice-filter-select" }) as HTMLSelectElement;
+		const filterSelect = filterLabel.createEl("select", { cls: "dndbi-dice-filter-select" });
 		filterSelect.add(new Option("All dice", ""));
 		for (const die of dice) {
 			filterSelect.add(new Option(die.label, die.label));
@@ -1872,7 +1872,7 @@ class FullCharacterSheetModal extends Modal {
 			barFill.addClass(pct > 50 ? "dndbi-cs-bar-fill--high" : pct > 25 ? "dndbi-cs-bar-fill--mid" : "dndbi-cs-bar-fill--low");
 			barLbl.setText(`${hpSt.current} / ${hpSt.max} HP${hpSt.temp > 0 ? ` (+${hpSt.temp} temp)` : ""}`);
 			// refresh core stat pill
-			const hpPillVal = coreRow.querySelector(".dndbi-cs-pill-value") as HTMLElement | null;
+			const hpPillVal = coreRow.querySelector<HTMLElement>(".dndbi-cs-pill-value");
 			if (hpPillVal) hpPillVal.setText(`${hpSt.current}/${hpSt.max}`);
 			// update death save pips
 			dsSPips.forEach((p, i) => { p.toggleClass("dndbi-cs-ds-pip--filled", i < hpSt.dsS); });
@@ -2151,7 +2151,7 @@ class FullCharacterSheetModal extends Modal {
 							const pip = pipsEl.createEl("button");
 							const isUsed = i < used;
 							pip.addClass("dndbi-cs-spell-pip");
-							pip.toggleClass("dndbi-cs-spell-pip--used", isUsed);
+							if (isUsed) { pip.addClass("dndbi-cs-spell-pip--used"); } else { pip.removeClass("dndbi-cs-spell-pip--used"); }
 							const pipI = i;
 							pip.addEventListener("click", () => {
 								const cur = usedSlots[lvl] ?? 0;
@@ -2216,7 +2216,7 @@ class FullCharacterSheetModal extends Modal {
 					sRow.addEventListener("click", () => {
 						void (async () => {
 							expanded = !expanded;
-							descEl.toggleClass("dndbi-cs-spell-desc--open", expanded);
+							if (expanded) { descEl.addClass("dndbi-cs-spell-desc--open"); } else { descEl.removeClass("dndbi-cs-spell-desc--open"); }
 							if (expanded && !fetched) {
 								fetched = true;
 								if (def.description) {
@@ -2257,7 +2257,7 @@ class FullCharacterSheetModal extends Modal {
 				const renderToggle = () => {
 					toggle.setText(eqState[itemKey] ? "⚔️" : "🎒");
 					toggle.title = eqState[itemKey] ? "Equipped — click to unequip" : "Unequipped — click to equip";
-					iRow.toggleClass("dndbi-cs-eq-row--unequipped", !eqState[itemKey]);
+					if (!eqState[itemKey]) { iRow.addClass("dndbi-cs-eq-row--unequipped"); } else { iRow.removeClass("dndbi-cs-eq-row--unequipped"); }
 				};
 				toggle.addClass("dndbi-cs-eq-toggle");
 				toggle.addEventListener("click", () => { eqState[itemKey] = !eqState[itemKey]; saveEq(eqState); renderToggle(); });
@@ -2314,8 +2314,8 @@ class FullCharacterSheetModal extends Modal {
 				hdr.addEventListener("click", () => {
 					void (async () => {
 						expanded = !expanded;
-						body.toggleClass("dndbi-cs-feat-body--open", expanded);
-						chevron.toggleClass("dndbi-cs-feat-chevron--open", expanded);
+						if (expanded) { body.addClass("dndbi-cs-feat-body--open"); } else { body.removeClass("dndbi-cs-feat-body--open"); }
+						if (expanded) { chevron.addClass("dndbi-cs-feat-chevron--open"); } else { chevron.removeClass("dndbi-cs-feat-chevron--open"); }
 						if (expanded && !fetched) {
 							fetched = true;
 							if (rawDesc) {
@@ -2372,7 +2372,7 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		const notesSection = this.sectionEl(mainCol, "Session Notes");
 		const notesKey = `dnd-notes-${char.id}`;
-		const notesArea = notesSection.createEl("textarea");
+		const notesArea = notesSection.createEl("textarea") as HTMLTextAreaElement;
 		notesArea.value = this.plugin.sessionState.get(notesKey) ?? "";
 		notesArea.placeholder = "Add your session notes here…";
 		notesArea.addClass("dndbi-cs-notes-area");
@@ -2396,7 +2396,9 @@ class FullCharacterSheetModal extends Modal {
 			const currSection = this.sectionEl(sideCol, "Currency");
 			const currRow = currSection.createEl("div"); currRow.addClass("dndbi-cs-curr-row");
 			const coin = (lbl: string, val: number, colorClass: string) => {
-				const c = currRow.createEl("div"); c.addClass("dndbi-cs-coin", colorClass);
+				const c = currRow.createEl("div");
+					c.addClass("dndbi-cs-coin");
+					c.addClass(colorClass);
 				const cv = c.createEl("span"); cv.setText(String(val)); cv.addClass("dndbi-cs-coin-val");
 				const cl = c.createEl("span"); cl.setText(lbl); cl.addClass("dndbi-cs-coin-lbl");
 			};
