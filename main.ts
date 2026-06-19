@@ -957,7 +957,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	};
 
 	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
-	const amtInput = dmgRow.createEl("input", { cls: "dndbi-hp-amt-input" }) as HTMLInputElement;
+	const amtInput = dmgRow.createEl<HTMLInputElement>("input", { cls: "dndbi-hp-amt-input" });
 	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
 	const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
 
@@ -992,7 +992,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
 	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
 	tmpLbl.setText("Temp HP:");
-	const tmpInput = tmpRow.createEl("input", { cls: "dndbi-hp-tmp-input" }) as HTMLInputElement;
+	const tmpInput = tmpRow.createEl<HTMLInputElement>("input", { cls: "dndbi-hp-tmp-input" });
 	tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
 	const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
 	setTmpBtn.setText("Set");
@@ -1019,7 +1019,7 @@ self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: H
 	) => {
 		const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
 		for (let i = 1; i <= 3; i++) {
-			const p = grp.createEl("button", { cls: `dndbi-hp-ds-pip ${flavour}` }) as HTMLButtonElement;
+			const p = grp.createEl<HTMLButtonElement>("button", { cls: `dndbi-hp-ds-pip ${flavour}` });
 			const idx = i;
 			p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
 			pips.push(p);
@@ -1242,7 +1242,7 @@ class HPTrackerModal extends Modal {
 
 		const currentInputEl = currentCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		}) as HTMLInputElement;
+		});
 		currentInputEl.type = "number";
 		currentInputEl.value = String(tracker.currentHp);
 		currentInputEl.min = "0";
@@ -1287,7 +1287,7 @@ class HPTrackerModal extends Modal {
 
 		const tempInputEl = tempCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		}) as HTMLInputElement;
+		});
 		tempInputEl.type = "number";
 		tempInputEl.value = String(tracker.tempHp);
 		tempInputEl.min = "0";
@@ -1310,7 +1310,7 @@ class HPTrackerModal extends Modal {
 
 		const maxInputEl = maxCtrlEl.createEl("input", {
 			cls: "dndbi-hpmodal-number-input",
-		}) as HTMLInputElement;
+		});
 		maxInputEl.type = "number";
 		maxInputEl.value = String(tracker.maxHp);
 		maxInputEl.min = "1";
