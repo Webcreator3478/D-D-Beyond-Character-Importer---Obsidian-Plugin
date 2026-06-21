@@ -55,11 +55,10 @@ jobs:
                 },
               },
               rules: {
-                // The dashboard's actual automated review doesn't fail builds
-                // on these two — keep them visible as warnings instead of
-                // hard errors so CI doesn't diverge from the real check.
-                "obsidianmd/ui/sentence-case": "warn",
-                "@typescript-eslint/no-unnecessary-type-assertion": "warn",
+                // The actual dashboard review doesn't flag these — turn them
+                // off so local CI output matches the real automated review.
+                "obsidianmd/ui/sentence-case": "off",
+                "@typescript-eslint/no-unnecessary-type-assertion": "off",
               },
             },
           ];
