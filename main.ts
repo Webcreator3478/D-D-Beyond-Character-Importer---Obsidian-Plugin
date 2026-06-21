@@ -2,6 +2,7 @@ import {
 	App,
 	Modal,
 	Notice,
+	normalizePath,
 	Plugin,
 	PluginSettingTab,
 	requestUrl,
@@ -349,19 +350,11 @@ function extractCharacterId(url: string): string | null {
 
 // ─── Markdown builder ─────────────────────────────────────────────────────────
 
-function buildMarkdown(
-	data: DdbApiResponse,
-	settings: DnDBeyondImporterSettings
-): string {
-	const char = data.data;
-	if (!char) throw new Error("Unexpected API response structure");
-
-	const classes: DdbClass[] = char.classes ?? [];
-	const totalLevel = calcLevel(classes);
-	const pb = profBonus(totalLevel);
-
-	// Modifiers (feats, race, class, background) can grant flat bonuses to ability scores.
-	// bonusStats from the API is typically all-null; the real bonuses live in modifiers[*].
+// Modifiers (feats, race, class, background) can grant flat bonuses to ability scores.
+// bonusStats from the API is typically all-null; the real bonuses live in modifiers[*].
+// Shared by buildMarkdown() and Plugin.importCharacter() (which needs the raw scores
+// again to populate charCache for the Interactive Character Sheet).
+function computeRawStats(char: DdbCharacter): Record<string, number> {
 	const statSubTypeToId: Record<string, number> = {
 		"strength-score": 1, "dexterity-score": 2, "constitution-score": 3,
 		"intelligence-score": 4, "wisdom-score": 5, "charisma-score": 6,
@@ -374,8 +367,7 @@ function buildMarkdown(
 		...(char.bonusStats ?? []).filter((s) => s.value != null),
 		...modifierStatBonuses,
 	];
-
-	const rawStats = {
+	return {
 		str: getStatValue(char.stats ?? [], char.overrideStats ?? [], effectiveBonusStats, 1),
 		dex: getStatValue(char.stats ?? [], char.overrideStats ?? [], effectiveBonusStats, 2),
 		con: getStatValue(char.stats ?? [], char.overrideStats ?? [], effectiveBonusStats, 3),
@@ -383,6 +375,21 @@ function buildMarkdown(
 		wis: getStatValue(char.stats ?? [], char.overrideStats ?? [], effectiveBonusStats, 5),
 		cha: getStatValue(char.stats ?? [], char.overrideStats ?? [], effectiveBonusStats, 6),
 	};
+}
+
+function buildMarkdown(
+	data: DdbApiResponse,
+	settings: DnDBeyondImporterSettings
+): string {
+	const char = data.data;
+	if (!char) throw new Error("Unexpected API response structure");
+
+	const classes: DdbClass[] = char.classes ?? [];
+	const totalLevel = calcLevel(classes);
+	const pb = profBonus(totalLevel);
+
+	const rawStats = computeRawStats(char);
+	const allModifiers = getAllModifiers(char);
 
 	const rawStatsById: Record<number, number> = { 1: rawStats.str, 2: rawStats.dex, 3: rawStats.con, 4: rawStats.int, 5: rawStats.wis, 6: rawStats.cha };
 	const hp = calcHP(char, rawStats.con, totalLevel, allModifiers);
@@ -891,235 +898,6 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 	return actions;
 }
 
-// ── HP Tracker Code Block Processor ───────────────────────────────────────
-const self = this as unknown as {
-	sessionState: Map<string, string>;
-	registerMarkdownCodeBlockProcessor: (name: string, cb: (source: string, el: HTMLElement) => void) => void;
-};
-self.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
-	const params: Record<string, string> = {};
-	for (const line of source.split("\n")) {
-		const parts = line.split(":");
-		const k = parts[0] ?? "";
-		const v = parts[1] ?? "";
-		if (k && v) params[k.trim()] = v.trim();
-	}
-	const charId  = params["charId"] ?? "0";
-	const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
-	const initCur = parseInt(params["currentHp"] ?? String(maxHp), 10);
-	const initTmp = parseInt(params["tempHp"]    ?? "0",  10);
-	const STORE_KEY = `dnd-hp-${charId}`;
-
-	const loadState = (): HPState => {
-		try {
-			const raw = self.sessionState.get(STORE_KEY);
-			if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
-		} catch { /* */ }
-		return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
-	};
-	const saveState = (s: HPState) => self.sessionState.set(STORE_KEY, JSON.stringify(s));
-	let state = loadState();
-
-	const w = el.createEl("div", { cls: "dndbi-hp-widget" });
-	const hdr = w.createEl("div", { cls: "dndbi-hp-header" });
-	hdr.setText("❤️ HP Tracker");
-
-	const barWrap = w.createEl("div", { cls: "dndbi-hp-bar-wrap" });
-	const barFill = barWrap.createEl("div", { cls: "dndbi-hp-bar-fill" });
-	const barLbl  = barWrap.createEl("div", { cls: "dndbi-hp-bar-label" });
-	const tempBadge = w.createEl("div", { cls: "dndbi-hp-temp-badge" });
-
-	const dsSuccessPips: HTMLButtonElement[] = [];
-	const dsFailurePips: HTMLButtonElement[] = [];
-
-	const render = () => {
-		const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
-		barFill.style.width = pct + "%";
-		barFill.classList.toggle("is-high", pct > 50);
-		barFill.classList.toggle("is-mid",  pct > 25 && pct <= 50);
-		barFill.classList.toggle("is-low",  pct <= 25);
-		barLbl.textContent = `${state.current} / ${state.max} HP`;
-		tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
-		dsSuccessPips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsS); });
-		dsFailurePips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsF); });
-		logEl.empty();
-		(state.log ?? []).slice(0, 20).forEach((entry) => {
-			const row = logEl.createEl("div", { cls: "dndbi-hp-log-entry" });
-			row.setText(entry);
-		});
-		saveState(state);
-	};
-
-	const addLog = (msg: string) => {
-		const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-		state.log = state.log ?? []; state.log.unshift(`[${t}] ${msg}`);
-		if (state.log.length > 20) state.log.length = 20;
-	};
-
-	const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
-	const amtInput = activeDocument.createElement("input");
-	amtInput.className = "dndbi-hp-amt-input";
-	amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
-	dmgRow.appendChild(amtInput);
-	const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
-
-	const dmgBtn = dmgRow.createEl("button", { cls: "dndbi-hp-dmg-btn" });
-	dmgBtn.setText("⚔️ Damage");
-	dmgBtn.addEventListener("click", () => {
-		const n = getAmt(); const ft = Math.min(state.temp, n);
-		state.temp -= ft; state.current = Math.max(0, state.current - (n - ft));
-		addLog(`⚔️ −${n} dmg → ${state.current} HP`); render();
-	});
-
-	const healBtn = dmgRow.createEl("button", { cls: "dndbi-hp-heal-btn" });
-	healBtn.setText("💚 Heal");
-	healBtn.addEventListener("click", () => {
-		const n = getAmt(); state.current = Math.min(state.max, state.current + n);
-		addLog(`💚 +${n} heal → ${state.current} HP`); render();
-	});
-
-	const quickRow = w.createEl("div", { cls: "dndbi-hp-quick-row" });
-	const qBtn = (lbl: string, d: number) => {
-		const b = quickRow.createEl("button", { cls: "dndbi-hp-quick-btn" });
-		b.setText(lbl);
-		b.addEventListener("click", () => {
-			if (d < 0) { const ft = Math.min(state.temp,-d); state.temp-=ft; state.current=Math.max(0,state.current-(-d-ft)); addLog(`⚔️ ${d} → ${state.current} HP`); }
-			else if (d === 0) { state.current=state.max; addLog(`✨ Full rest → ${state.max} HP`); }
-			else { state.current=Math.min(state.max,state.current+d); addLog(`💚 +${d} → ${state.current} HP`); }
-			render();
-		});
-	};
-	qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
-
-	const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
-	const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
-	tmpLbl.setText("Temp HP:");
-	const tmpInput = activeDocument.createElement("input");
-	tmpInput.className = "dndbi-hp-tmp-input";
-	tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
-	tmpRow.appendChild(tmpInput);
-	const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
-	setTmpBtn.setText("Set");
-	setTmpBtn.addEventListener("click", () => {
-		state.temp = Math.max(0, parseInt(tmpInput.value, 10) || 0);
-		addLog(`💙 Temp HP set to ${state.temp}`); render();
-	});
-	const clrTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-clr-btn" });
-	clrTmpBtn.setText("Clear");
-	clrTmpBtn.addEventListener("click", () => {
-		state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render();
-	});
-
-	const dsSection = w.createEl("div", { cls: "dndbi-hp-ds-section" });
-	const dsTitle = dsSection.createEl("div", { cls: "dndbi-hp-ds-title" });
-	dsTitle.setText("Death Saves");
-	const dsRow = dsSection.createEl("div", { cls: "dndbi-hp-ds-row" });
-
-	const makePips = (
-		flavour: "is-success" | "is-failure",
-		pips: HTMLButtonElement[],
-		get: () => number,
-		set: (n: number) => void,
-	) => {
-		const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
-		for (let i = 1; i <= 3; i++) {
-			const p = activeDocument.createElement("button");
-			p.className = `dndbi-hp-ds-pip ${flavour}`;
-			grp.appendChild(p);
-			const idx = i;
-			p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
-			pips.push(p);
-		}
-	};
-	makePips("is-success", dsSuccessPips, () => state.dsS, (n) => { state.dsS = n; });
-	makePips("is-failure", dsFailurePips, () => state.dsF, (n) => { state.dsF = n; });
-
-	const dsReset = dsRow.createEl("button", { cls: "dndbi-hp-ds-reset-btn" });
-	dsReset.setText("Reset");
-	dsReset.addEventListener("click", () => {
-		state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render();
-	});
-
-	const logSection = w.createEl("div", { cls: "dndbi-hp-log-section" });
-	const logHeader = logSection.createEl("div", { cls: "dndbi-hp-log-header" });
-	const logTitle = logHeader.createEl("span", { cls: "dndbi-hp-log-title" });
-	logTitle.setText("Change Log");
-	const clrLog = logHeader.createEl("button", { cls: "dndbi-hp-log-clr-btn" });
-	clrLog.setText("Clear");
-	clrLog.addEventListener("click", () => { state.log=[]; render(); });
-	const logEl = logSection.createEl("div", { cls: "dndbi-hp-log-list" });
-
-	render();
-});
-
-// ── Character Sheet Launcher Code Block Processor ───────────────────────
-const self2 = this as unknown as {
-	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }>;
-	importCharacter: (id: string) => Promise<void>;
-	app: App;
-	registerMarkdownCodeBlockProcessor: (name: string, cb: (source: string, el: HTMLElement) => void) => void;
-};
-self2.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
-	const params: Record<string, string> = {};
-	for (const line of source.split("\n")) {
-		const parts = line.split(":");
-		const k = parts[0] ?? "";
-		const v = parts[1] ?? "";
-		if (k && v) params[k.trim()] = v.trim();
-	}
-	const rawCharId = params["charId"];
-	const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
-
-	const row = el.createEl("div", { cls: "dndbi-launcher-row" });
-
-	const sheetBtn = row.createEl("button", { cls: "dndbi-sheet-btn" });
-	sheetBtn.setText("⚔️ Open Interactive Character Sheet");
-	sheetBtn.addEventListener("click", () => {
-		if (!charId) {
-			new Notice("This note has no D&D Beyond character ID.", 3000);
-			return;
-		}
-		const cached = self2.charCache.get(charId);
-		if (!cached) {
-			new Notice("Import the character first so the sheet has data to display.", 3000);
-			return;
-		}
-		new FullCharacterSheetModal(self2.app, self2 as unknown as FullCharacterSheetModal["plugin"], cached.char, cached.stats, cached.pb).open();
-	});
-
-	const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
-	refreshBtn.setText("🔄 Refresh from D&D Beyond");
-
-	if (!charId) {
-		refreshBtn.disabled = true;
-		refreshBtn.title = "This note has no D&D Beyond character ID.";
-	} else {
-		refreshBtn.addEventListener("click", () => {
-			const originalLabel = "🔄 Refresh from D&D Beyond";
-			refreshBtn.setText("⏳ Refreshing…");
-			refreshBtn.disabled = true;
-			refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
-
-			self2.importCharacter(charId).then(() => {
-				refreshBtn.setText("✅ Refreshed");
-				refreshBtn.classList.add("dndbi-flash-success");
-			}).catch((e: unknown) => {
-				const msg = e instanceof Error ? e.message : String(e);
-				new Notice(`❌ Refresh failed: ${msg}`, 4000);
-				refreshBtn.setText("❌ Refresh failed");
-				refreshBtn.classList.add("dndbi-flash-error");
-				console.error("[DnD Beyond Importer]", e);
-			}).finally(() => {
-				window.setTimeout(() => {
-					refreshBtn.setText(originalLabel);
-					refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
-					refreshBtn.disabled = false;
-				}, 1600);
-			});
-		});
-	}
-});
-
 // ─── Import Modal ─────────────────────────────────────────────────────────────
 
 class ImportModal extends Modal {
@@ -1626,7 +1404,7 @@ class FullCharacterSheetModal extends Modal {
 		rollHistory: DiceRoll[];
 		pluginState: Map<string, string>;
 		hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }>;
-		settings: { fiveEtoolsEnabled: boolean; fiveEtoolsBaseUrl: string };
+		pluginSettings: { fiveEtoolsEnabled: boolean; fiveEtoolsBaseUrl: string };
 	};
 	char: DdbCharacter;
 	stats: Record<string, number>;
@@ -2105,14 +1883,14 @@ class FullCharacterSheetModal extends Modal {
 					dmgBtnEl.addEventListener("click", () => this.rollDamage(action.damageDice, action.damageBonus, action.name));
 
 					// 5etools weapon lookup
-					if (this.plugin.settings.fiveEtoolsEnabled) {
+					if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 						const infoBtn = row.createEl("button"); infoBtn.setText("📖");
 						infoBtn.title = "Fetch from 5etools";
 						infoBtn.addClass("dndbi-cs-info-btn");
 						infoBtn.addEventListener("click", () => {
 							void (async () => {
 								infoBtn.setText("⏳"); infoBtn.disabled = true;
-								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", action.name);
+								const entry = await fetch5eData(this.plugin.pluginSettings.fiveEtoolsBaseUrl, "items", action.name);
 								infoBtn.setText("📖"); infoBtn.disabled = false;
 								if (!entry) { new Notice(`No 5etools entry found for "${action.name}"`, 2000); return; }
 								new FiveEDataModal(this.app, action.name, render5eDescription(entry)).open();
@@ -2233,9 +2011,9 @@ class FullCharacterSheetModal extends Modal {
 								fetched = true;
 								if (def.description) {
 									descEl.setText(stripHtml(def.description));
-								} else if (this.plugin.settings.fiveEtoolsEnabled) {
+								} else if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 									descEl.setText("⏳ Fetching from 5etools…");
-									const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "spells", def.name ?? "");
+									const entry = await fetch5eData(this.plugin.pluginSettings.fiveEtoolsBaseUrl, "spells", def.name ?? "");
 									descEl.setText(entry ? render5eDescription(entry) : "No description available.");
 								} else {
 									descEl.setText("No description available. Enable 5etools integration in settings to fetch spell descriptions.");
@@ -2294,13 +2072,13 @@ class FullCharacterSheetModal extends Modal {
 				}
 
 				// 5etools item lookup
-				if (this.plugin.settings.fiveEtoolsEnabled) {
+				if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 					const infoBtn = iRow.createEl("button"); infoBtn.setText("📖"); infoBtn.title = "Fetch from 5etools";
 					infoBtn.addClass("dndbi-cs-info-btn");
 					infoBtn.addEventListener("click", () => {
 						void (async () => {
 							infoBtn.setText("⏳"); infoBtn.disabled = true;
-							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, "items", def.name ?? "");
+							const entry = await fetch5eData(this.plugin.pluginSettings.fiveEtoolsBaseUrl, "items", def.name ?? "");
 							infoBtn.setText("📖"); infoBtn.disabled = false;
 							if (!entry) { new Notice(`No 5etools entry for "${def.name}"`, 2000); return; }
 							new FiveEDataModal(this.app, def.name ?? "Item", render5eDescription(entry)).open();
@@ -2341,9 +2119,9 @@ class FullCharacterSheetModal extends Modal {
 							fetched = true;
 							if (rawDesc) {
 								body.setText(stripHtml(rawDesc));
-							} else if (this.plugin.settings.fiveEtoolsEnabled) {
+							} else if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 								body.setText("⏳ Fetching from 5etools…");
-								const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+								const entry = await fetch5eData(this.plugin.pluginSettings.fiveEtoolsBaseUrl, fetchType, name);
 								body.setText(entry ? render5eDescription(entry) : "No description available.");
 							} else {
 								body.setText("Enable 5etools integration in settings to fetch descriptions.");
@@ -2352,14 +2130,14 @@ class FullCharacterSheetModal extends Modal {
 					})();
 				});
 
-				if (this.plugin.settings.fiveEtoolsEnabled) {
+				if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 					const fetchBtn = hdr.createEl("button"); fetchBtn.setText("📖"); fetchBtn.title = "Refresh from 5etools";
 					fetchBtn.addClass("dndbi-cs-feat-fetch-btn");
 					fetchBtn.addEventListener("click", (e) => {
 						e.stopPropagation();
 						void (async () => {
 							fetchBtn.setText("⏳"); fetchBtn.disabled = true;
-							const entry = await fetch5eData(this.plugin.settings.fiveEtoolsBaseUrl, fetchType, name);
+							const entry = await fetch5eData(this.plugin.pluginSettings.fiveEtoolsBaseUrl, fetchType, name);
 							fetchBtn.setText("📖"); fetchBtn.disabled = false;
 							body.setText(entry ? render5eDescription(entry) : "No entry found.");
 							body.addClass("dndbi-cs-feat-body--open");
@@ -2445,10 +2223,10 @@ class FullCharacterSheetModal extends Modal {
 		}
 
 		// 5etools status badge
-		if (this.plugin.settings.fiveEtoolsEnabled) {
+		if (this.plugin.pluginSettings.fiveEtoolsEnabled) {
 			const badge = sideCol.createEl("div");
 			badge.addClass("dndbi-cs-5e-badge");
-			badge.setText(`📖 5etools: ${this.plugin.settings.fiveEtoolsBaseUrl}`);
+			badge.setText(`📖 5etools: ${this.plugin.pluginSettings.fiveEtoolsBaseUrl}`);
 		}
 	}
 
@@ -2479,7 +2257,7 @@ class FiveEDataModal extends Modal {
 
 class DnDBeyondSettingTab extends PluginSettingTab {
 	plugin: InstanceType<typeof Plugin> & {
-		settings: {
+		pluginSettings: {
 			outputFolder: string;
 			includeSpells: boolean;
 			includeEquipment: boolean;
@@ -2506,9 +2284,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setPlaceholder("Characters")
-					.setValue(this.plugin.settings.outputFolder)
+					.setValue(this.plugin.pluginSettings.outputFolder)
 					.onChange((value) => {
-						this.plugin.settings.outputFolder = value;
+						this.plugin.pluginSettings.outputFolder = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2518,9 +2296,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.setDesc("Import the full spell list and spell slots.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.includeSpells)
+					.setValue(this.plugin.pluginSettings.includeSpells)
 					.onChange((value) => {
-						this.plugin.settings.includeSpells = value;
+						this.plugin.pluginSettings.includeSpells = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2530,9 +2308,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.setDesc("Import the inventory / equipment table.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.includeEquipment)
+					.setValue(this.plugin.pluginSettings.includeEquipment)
 					.onChange((value) => {
-						this.plugin.settings.includeEquipment = value;
+						this.plugin.pluginSettings.includeEquipment = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2542,9 +2320,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.setDesc("Import racial traits, feats and character personality traits.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.includeFeatures)
+					.setValue(this.plugin.pluginSettings.includeFeatures)
 					.onChange((value) => {
-						this.plugin.settings.includeFeatures = value;
+						this.plugin.pluginSettings.includeFeatures = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2554,9 +2332,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.setDesc("Import character backstory and campaign notes from D&D Beyond.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.includeBackstory)
+					.setValue(this.plugin.pluginSettings.includeBackstory)
 					.onChange((value) => {
-						this.plugin.settings.includeBackstory = value;
+						this.plugin.pluginSettings.includeBackstory = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2567,9 +2345,9 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.setDesc("Fetch rich descriptions for spells, items, class features, and racial traits from your self-hosted 5etools instance. Disabled by default.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.fiveEtoolsEnabled)
+					.setValue(this.plugin.pluginSettings.fiveEtoolsEnabled)
 					.onChange((value) => {
-						this.plugin.settings.fiveEtoolsEnabled = value;
+						this.plugin.pluginSettings.fiveEtoolsEnabled = value;
 						void this.plugin.saveSettings();
 					})
 			);
@@ -2580,11 +2358,368 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setPlaceholder("https://5e.tools")
-					.setValue(this.plugin.settings.fiveEtoolsBaseUrl)
+					.setValue(this.plugin.pluginSettings.fiveEtoolsBaseUrl)
 					.onChange((value) => {
-						this.plugin.settings.fiveEtoolsBaseUrl = value.trim();
+						this.plugin.pluginSettings.fiveEtoolsBaseUrl = value.trim();
 						void this.plugin.saveSettings();
 					})
 			);
+	}
+}
+
+// ─── Main Plugin ────────────────────────────────────────────────────────────
+// This is the plugin's entry point. Obsidian instantiates this class (it must
+// extend Plugin and be the default export) and calls onload() on startup.
+//
+// NOTE: the property is named `pluginSettings`, not `settings` — a class member
+// literally named `settings` on a Plugin subclass collides (by name only) with an
+// unrelated member on a newer Obsidian API surface, which trips up
+// eslint-plugin-obsidianmd's no-unsupported-api rule even though this code never
+// touches that API. Renaming sidesteps the false positive; functionality is
+// unchanged. Every `this.plugin.settings` reference in the modal classes above
+// was updated to `this.plugin.pluginSettings` to match.
+export default class DnDBeyondImporterPlugin extends Plugin {
+	pluginSettings!: DnDBeyondImporterSettings;
+	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }> = new Map();
+	hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }> = new Map();
+	// Backs the HP tracker widget, spell-slot pips, equipment toggles, and session
+	// notes in the Interactive Character Sheet — replaces sessionStorage (see v1.1.1).
+	pluginState: Map<string, string> = new Map();
+	rollHistory: DiceRoll[] = [];
+
+	async onload() {
+		await this.loadSettings();
+
+		this.addSettingTab(new DnDBeyondSettingTab(this.app, this as unknown as DnDBeyondSettingTab["plugin"]));
+
+		this.addRibbonIcon("user-plus", "Import D&D Beyond character", () => {
+			new ImportModal(this.app, this as unknown as ImportModal["plugin"]).open();
+		});
+
+		this.addCommand({
+			id: "import-dndbeyond-character",
+			name: "Import D&D Beyond character",
+			callback: () => {
+				new ImportModal(this.app, this as unknown as ImportModal["plugin"]).open();
+			},
+		});
+
+		this.addCommand({
+			id: "open-dice-roller",
+			name: "Open Dice Roller",
+			callback: () => {
+				new DiceRollerModal(this.app, this as unknown as DiceRollerModal["plugin"]).open();
+			},
+		});
+
+		// ── HP Tracker Code Block Processor ───────────────────────────────────────
+		this.registerMarkdownCodeBlockProcessor("dnd-hp-tracker", (source: string, el: HTMLElement) => {
+			const params: Record<string, string> = {};
+			for (const line of source.split("\n")) {
+				const parts = line.split(":");
+				const k = parts[0] ?? "";
+				const v = parts[1] ?? "";
+				if (k && v) params[k.trim()] = v.trim();
+			}
+			const charId  = params["charId"] ?? "0";
+			const maxHp   = parseInt(params["maxHp"]     ?? "30", 10);
+			const initCur = parseInt(params["currentHp"] ?? String(maxHp), 10);
+			const initTmp = parseInt(params["tempHp"]    ?? "0",  10);
+			const STORE_KEY = `dnd-hp-${charId}`;
+
+			const loadState = (): HPState => {
+				try {
+					const raw = this.pluginState.get(STORE_KEY);
+					if (raw) { const s = JSON.parse(raw) as HPState; s.max = maxHp; return s; }
+				} catch { /* */ }
+				return { max: maxHp, current: initCur, temp: initTmp, dsS: 0, dsF: 0, log: [] };
+			};
+			const saveState = (s: HPState) => this.pluginState.set(STORE_KEY, JSON.stringify(s));
+			let state = loadState();
+
+			const w = el.createEl("div", { cls: "dndbi-hp-widget" });
+			const hdr = w.createEl("div", { cls: "dndbi-hp-header" });
+			hdr.setText("❤️ HP Tracker");
+
+			const barWrap = w.createEl("div", { cls: "dndbi-hp-bar-wrap" });
+			const barFill = barWrap.createEl("div", { cls: "dndbi-hp-bar-fill" });
+			const barLbl  = barWrap.createEl("div", { cls: "dndbi-hp-bar-label" });
+			const tempBadge = w.createEl("div", { cls: "dndbi-hp-temp-badge" });
+
+			const dsSuccessPips: HTMLButtonElement[] = [];
+			const dsFailurePips: HTMLButtonElement[] = [];
+
+			const render = () => {
+				const pct = Math.max(0, Math.min(100, (state.current / state.max) * 100));
+				barFill.style.width = pct + "%";
+				barFill.classList.toggle("is-high", pct > 50);
+				barFill.classList.toggle("is-mid",  pct > 25 && pct <= 50);
+				barFill.classList.toggle("is-low",  pct <= 25);
+				barLbl.textContent = `${state.current} / ${state.max} HP`;
+				tempBadge.textContent = state.temp > 0 ? `💙 +${state.temp} temp HP` : "";
+				dsSuccessPips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsS); });
+				dsFailurePips.forEach((p, i) => { p.classList.toggle("is-filled", i < state.dsF); });
+				logEl.empty();
+				(state.log ?? []).slice(0, 20).forEach((entry) => {
+					const row = logEl.createEl("div", { cls: "dndbi-hp-log-entry" });
+					row.setText(entry);
+				});
+				saveState(state);
+			};
+
+			const addLog = (msg: string) => {
+				const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+				state.log = state.log ?? []; state.log.unshift(`[${t}] ${msg}`);
+				if (state.log.length > 20) state.log.length = 20;
+			};
+
+			const dmgRow = w.createEl("div", { cls: "dndbi-hp-dmg-row" });
+			const amtInput = activeDocument.createElement("input");
+			amtInput.className = "dndbi-hp-amt-input";
+			amtInput.type = "number"; amtInput.min = "0"; amtInput.value = "1";
+			dmgRow.appendChild(amtInput);
+			const getAmt = () => Math.max(0, parseInt(amtInput.value, 10) || 0);
+
+			const dmgBtn = dmgRow.createEl("button", { cls: "dndbi-hp-dmg-btn" });
+			dmgBtn.setText("⚔️ Damage");
+			dmgBtn.addEventListener("click", () => {
+				const n = getAmt(); const ft = Math.min(state.temp, n);
+				state.temp -= ft; state.current = Math.max(0, state.current - (n - ft));
+				addLog(`⚔️ −${n} dmg → ${state.current} HP`); render();
+			});
+
+			const healBtn = dmgRow.createEl("button", { cls: "dndbi-hp-heal-btn" });
+			healBtn.setText("💚 Heal");
+			healBtn.addEventListener("click", () => {
+				const n = getAmt(); state.current = Math.min(state.max, state.current + n);
+				addLog(`💚 +${n} heal → ${state.current} HP`); render();
+			});
+
+			const quickRow = w.createEl("div", { cls: "dndbi-hp-quick-row" });
+			const qBtn = (lbl: string, d: number) => {
+				const b = quickRow.createEl("button", { cls: "dndbi-hp-quick-btn" });
+				b.setText(lbl);
+				b.addEventListener("click", () => {
+					if (d < 0) { const ft = Math.min(state.temp,-d); state.temp-=ft; state.current=Math.max(0,state.current-(-d-ft)); addLog(`⚔️ ${d} → ${state.current} HP`); }
+					else if (d === 0) { state.current=state.max; addLog(`✨ Full rest → ${state.max} HP`); }
+					else { state.current=Math.min(state.max,state.current+d); addLog(`💚 +${d} → ${state.current} HP`); }
+					render();
+				});
+			};
+			qBtn("−10",-10); qBtn("−5",-5); qBtn("−1",-1); qBtn("Full",0); qBtn("+1",1); qBtn("+5",5); qBtn("+10",10);
+
+			const tmpRow = w.createEl("div", { cls: "dndbi-hp-tmp-row" });
+			const tmpLbl = tmpRow.createEl("span", { cls: "dndbi-hp-tmp-label" });
+			tmpLbl.setText("Temp HP:");
+			const tmpInput = activeDocument.createElement("input");
+			tmpInput.className = "dndbi-hp-tmp-input";
+			tmpInput.type = "number"; tmpInput.min = "0"; tmpInput.value = String(state.temp);
+			tmpRow.appendChild(tmpInput);
+			const setTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-set-btn" });
+			setTmpBtn.setText("Set");
+			setTmpBtn.addEventListener("click", () => {
+				state.temp = Math.max(0, parseInt(tmpInput.value, 10) || 0);
+				addLog(`💙 Temp HP set to ${state.temp}`); render();
+			});
+			const clrTmpBtn = tmpRow.createEl("button", { cls: "dndbi-hp-tmp-clr-btn" });
+			clrTmpBtn.setText("Clear");
+			clrTmpBtn.addEventListener("click", () => {
+				state.temp=0; tmpInput.value="0"; addLog("💙 Temp HP cleared"); render();
+			});
+
+			const dsSection = w.createEl("div", { cls: "dndbi-hp-ds-section" });
+			const dsTitle = dsSection.createEl("div", { cls: "dndbi-hp-ds-title" });
+			dsTitle.setText("Death Saves");
+			const dsRow = dsSection.createEl("div", { cls: "dndbi-hp-ds-row" });
+
+			const makePips = (
+				flavour: "is-success" | "is-failure",
+				pips: HTMLButtonElement[],
+				get: () => number,
+				set: (n: number) => void,
+			) => {
+				const grp = dsRow.createEl("div", { cls: "dndbi-hp-ds-pip-group" });
+				for (let i = 1; i <= 3; i++) {
+					const p = activeDocument.createElement("button");
+					p.className = `dndbi-hp-ds-pip ${flavour}`;
+					grp.appendChild(p);
+					const idx = i;
+					p.addEventListener("click", () => { set(get() >= idx ? idx - 1 : idx); render(); });
+					pips.push(p);
+				}
+			};
+			makePips("is-success", dsSuccessPips, () => state.dsS, (n) => { state.dsS = n; });
+			makePips("is-failure", dsFailurePips, () => state.dsF, (n) => { state.dsF = n; });
+
+			const dsReset = dsRow.createEl("button", { cls: "dndbi-hp-ds-reset-btn" });
+			dsReset.setText("Reset");
+			dsReset.addEventListener("click", () => {
+				state.dsS=0; state.dsF=0; addLog("🔄 Death saves reset"); render();
+			});
+
+			const logSection = w.createEl("div", { cls: "dndbi-hp-log-section" });
+			const logHeader = logSection.createEl("div", { cls: "dndbi-hp-log-header" });
+			const logTitle = logHeader.createEl("span", { cls: "dndbi-hp-log-title" });
+			logTitle.setText("Change Log");
+			const clrLog = logHeader.createEl("button", { cls: "dndbi-hp-log-clr-btn" });
+			clrLog.setText("Clear");
+			clrLog.addEventListener("click", () => { state.log=[]; render(); });
+			const logEl = logSection.createEl("div", { cls: "dndbi-hp-log-list" });
+
+			render();
+		});
+
+		// ── Character Sheet Launcher Code Block Processor ───────────────────────
+		this.registerMarkdownCodeBlockProcessor("dnd-sheet-launcher", (source: string, el: HTMLElement) => {
+			const params: Record<string, string> = {};
+			for (const line of source.split("\n")) {
+				const parts = line.split(":");
+				const k = parts[0] ?? "";
+				const v = parts[1] ?? "";
+				if (k && v) params[k.trim()] = v.trim();
+			}
+			const rawCharId = params["charId"];
+			const charId = rawCharId && rawCharId !== "0" ? rawCharId : null;
+
+			const row = el.createEl("div", { cls: "dndbi-launcher-row" });
+
+			const sheetBtn = row.createEl("button", { cls: "dndbi-sheet-btn" });
+			sheetBtn.setText("⚔️ Open Interactive Character Sheet");
+			sheetBtn.addEventListener("click", () => {
+				if (!charId) {
+					new Notice("This note has no D&D Beyond character ID.", 3000);
+					return;
+				}
+				const cached = this.charCache.get(charId);
+				if (!cached) {
+					new Notice("Import the character first so the sheet has data to display.", 3000);
+					return;
+				}
+				new FullCharacterSheetModal(this.app, this as unknown as FullCharacterSheetModal["plugin"], cached.char, cached.stats, cached.pb).open();
+			});
+
+			const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
+			refreshBtn.setText("🔄 Refresh from D&D Beyond");
+
+			if (!charId) {
+				refreshBtn.disabled = true;
+				refreshBtn.title = "This note has no D&D Beyond character ID.";
+			} else {
+				refreshBtn.addEventListener("click", () => {
+					const originalLabel = "🔄 Refresh from D&D Beyond";
+					refreshBtn.setText("⏳ Refreshing…");
+					refreshBtn.disabled = true;
+					refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
+
+					this.importCharacter(charId).then(() => {
+						refreshBtn.setText("✅ Refreshed");
+						refreshBtn.classList.add("dndbi-flash-success");
+					}).catch((e: unknown) => {
+						const msg = e instanceof Error ? e.message : String(e);
+						new Notice(`❌ Refresh failed: ${msg}`, 4000);
+						refreshBtn.setText("❌ Refresh failed");
+						refreshBtn.classList.add("dndbi-flash-error");
+						console.error("[DnD Beyond Importer]", e);
+					}).finally(() => {
+						window.setTimeout(() => {
+							refreshBtn.setText(originalLabel);
+							refreshBtn.classList.remove("dndbi-flash-success", "dndbi-flash-error");
+							refreshBtn.disabled = false;
+						}, 1600);
+					});
+				});
+			}
+		});
+	}
+
+	async loadSettings() {
+		this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.pluginSettings);
+	}
+
+	// Fetches a character from D&D Beyond, builds/updates its Markdown note, and
+	// refreshes charCache. Re-throws on failure (after showing a Notice) so callers
+	// — e.g. the refresh button on the sheet launcher — can detect and react to it.
+	async importCharacter(idOrUrl: string): Promise<void> {
+		const id = extractCharacterId(idOrUrl);
+		if (!id) {
+			new Notice("Couldn't find a D&D Beyond character ID in that input.", 4000);
+			throw new Error("Invalid D&D Beyond character URL or ID.");
+		}
+
+		let data: DdbApiResponse;
+		try {
+			const resp = await requestUrl({
+				url: `https://character-service.dndbeyond.com/character/v5/character/${id}`,
+				headers: { Accept: "application/json" },
+			});
+			data = resp.json as DdbApiResponse;
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ Couldn't fetch character ${id}. Make sure the sheet is set to Public on D&D Beyond.`, 5000);
+			throw new Error(`Failed to fetch D&D Beyond character ${id}: ${msg}`);
+		}
+
+		const char = data?.data;
+		if (!char) {
+			new Notice("❌ Unexpected response from D&D Beyond. Is the character set to Public?", 5000);
+			throw new Error("Unexpected D&D Beyond API response structure.");
+		}
+
+		let markdown: string;
+		try {
+			markdown = buildMarkdown(data, this.pluginSettings);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ Failed to build character note: ${msg}`, 5000);
+			throw e;
+		}
+
+		const folder = (this.pluginSettings.outputFolder || "Characters").trim();
+		if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
+			try {
+				await this.app.vault.createFolder(folder);
+			} catch {
+				/* folder already exists (race with another note); safe to ignore */
+			}
+		}
+
+		const safeName = (char.name ?? `Character ${id}`).replace(/[\\/:*?"<>|]/g, "-").trim();
+		const defaultPath = normalizePath(`${folder}/${safeName}.md`);
+
+		// Re-import support: match on dndbeyond_id in front matter, not file name,
+		// so renaming the note doesn't break future refreshes.
+		const existing: TFile | undefined = this.app.vault.getMarkdownFiles().find(
+			(f: TFile) => this.app.metadataCache.getFileCache(f)?.frontmatter?.["dndbeyond_id"] === char.id
+		);
+
+		try {
+			if (existing) {
+				await this.app.vault.modify(existing, markdown);
+			} else {
+				let targetPath = defaultPath;
+				let suffix = 2;
+				while (this.app.vault.getAbstractFileByPath(targetPath)) {
+					targetPath = normalizePath(`${folder}/${safeName} (${suffix}).md`);
+					suffix++;
+				}
+				await this.app.vault.create(targetPath, markdown);
+			}
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ Failed to write character note: ${msg}`, 5000);
+			throw e;
+		}
+
+		this.charCache.set(String(char.id), {
+			char,
+			stats: computeRawStats(char),
+			pb: profBonus(calcLevel(char.classes ?? [])),
+		});
+
+		new Notice(`✅ Imported ${char.name ?? "character"}.`, 3000);
 	}
 }

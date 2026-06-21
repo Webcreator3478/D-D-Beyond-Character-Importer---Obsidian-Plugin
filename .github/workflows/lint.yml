@@ -17,13 +17,28 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          npm install typescript@latest @typescript-eslint/parser @typescript-eslint/eslint-plugin eslint eslint-plugin-obsidianmd --save-dev --legacy-peer-deps
+          npm install eslint eslint-plugin-obsidianmd @eslint/js @eslint/json typescript-eslint --save-dev --legacy-peer-deps
 
-      - name: Create Temporary Config
+      - name: Create ESLint Config
         run: |
-          echo 'import tsparser from "@typescript-eslint/parser";' > eslint.config.mjs
-          echo 'import obsidianmd from "eslint-plugin-obsidianmd";' >> eslint.config.mjs
-          echo 'export default [{ files: ["**/*.ts"], plugins: { obsidianmd }, rules: { ...obsidianmd.configs.recommended.rules }, languageOptions: { parser: tsparser, parserOptions: { project: "./tsconfig.json" } } }];' >> eslint.config.mjs
+          cat > eslint.config.mjs << 'ESLINTEOF'
+          import obsidianmd from "eslint-plugin-obsidianmd";
+
+          export default [
+            ...obsidianmd.configs.recommended,
+            {
+              files: ["**/*.ts"],
+              languageOptions: {
+                parserOptions: {
+                  project: "./tsconfig.json",
+                },
+              },
+            },
+            {
+              ignores: ["main.js", "node_modules/**", "eslint.config.mjs"],
+            },
+          ];
+          ESLINTEOF
 
       - name: Run Linter
         run: npx eslint .
