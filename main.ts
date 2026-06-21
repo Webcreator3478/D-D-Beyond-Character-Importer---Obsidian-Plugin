@@ -2461,7 +2461,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			id: "open-hp-tracker",
 			name: "Open HP Tracker (legacy)",
 			callback: () => {
-				const firstId: string | undefined = this.charCache.keys().next().value;
+				const firstId = this.charCache.keys().next().value as string | undefined;
 				if (!firstId) {
 					new Notice("Import a D&D Beyond character first.", 3000);
 					return;
