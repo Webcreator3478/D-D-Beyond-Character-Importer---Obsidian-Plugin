@@ -1014,11 +1014,12 @@ class HPTrackerModal extends Modal {
 
 		contentEl.createEl("h2", { text: "❤️ HP Tracker" });
 
-		let tracker = this.plugin.hpTracking.get(this.characterId);
-		if (!tracker) {
-			tracker = { maxHp: 30, currentHp: 30, tempHp: 0 };
-			this.plugin.hpTracking.set(this.characterId, tracker);
+		let trackerEntry = this.plugin.hpTracking.get(this.characterId);
+		if (!trackerEntry) {
+			trackerEntry = { maxHp: 30, currentHp: 30, tempHp: 0 };
+			this.plugin.hpTracking.set(this.characterId, trackerEntry);
 		}
+		const tracker: { maxHp: number; currentHp: number; tempHp: number } = trackerEntry;
 
 		// ── HP Display ───────────────────────────────────────────────────────
 		const displayEl = contentEl.createEl("div", { cls: "dndbi-hpmodal-display" });
@@ -2440,6 +2441,12 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 		this.addRibbonIcon("user-plus", "Import D&D Beyond character", () => {
 			new ImportModal(this.app, this as unknown as ImportModal["plugin"]).open();
 		});
+
+		this.addRibbonIcon("dice", "Open Dice Roller", () => {
+			new DiceRollerModal(this.app, this as unknown as DiceRollerModal["plugin"]).open();
+		});
+
+
 
 		this.addCommand({
 			id: "import-dndbeyond-character",

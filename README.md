@@ -1,109 +1,131 @@
-# DnD Beyond Importer
+<div align="center">
 
-Pull any **public** D&D Beyond character sheet into your Obsidian vault as a formatted Markdown note, then roll dice and run checks without ever leaving the app.
+<img src="assets/banner.png" width="100%" alt="DnD Beyond Importer banner">
+
+# ⚔️ DnD Beyond Importer
+
+### Pull any public D&D Beyond character into Obsidian — formatted, queryable, and ready to roll.
+
+<p>
+<img src="https://img.shields.io/github/stars/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin?style=for-the-badge&color=7C3AED">
+<img src="https://img.shields.io/github/downloads/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin/total?style=for-the-badge&color=7C3AED">
+<img src="https://img.shields.io/github/license/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin?style=for-the-badge&color=7C3AED">
+<img src="https://img.shields.io/badge/Obsidian-Compatible-7C3AED?style=for-the-badge">
+</p>
+
+<p>
+<a href="#-what-it-does"><img src="https://img.shields.io/badge/✨_Features-blue?style=for-the-badge"></a>
+<a href="#-installation"><img src="https://img.shields.io/badge/📦_Installation-purple?style=for-the-badge"></a>
+<a href="#-screenshots"><img src="https://img.shields.io/badge/📸_Screenshots-cyan?style=for-the-badge"></a>
+<a href="#-contributors"><img src="https://img.shields.io/badge/👥_Contributors-orange?style=for-the-badge"></a>
+<a href="#-support"><img src="https://img.shields.io/badge/❤️_Support-red?style=for-the-badge"></a>
+</p>
+
+</div>
+
+<p align="center">
+  <img src="assets/showcase.png" width="100%" alt="Importer, character sheet, dice roller and interactive character sheet.">
+</p>
 
 ---
 
-## What it does
+## ✨ What it does
 
-- 📋 **Full character sheet** — ability scores, saving throws, skills, HP, AC, speed, proficiency bonus
-- ⚔️ **Equipment** — inventory table with equipped status and weight
-- 📖 **Spells** — grouped by level, with school, cast time, range, concentration, and prepared status
-- 🌟 **Features & Traits** — racial traits, feats, personality/ideals/bonds/flaws
-- 💰 **Currency** — all coin types
-- 📜 **Backstory & Notes** — character backstory and campaign notes
-- 🏷️ **YAML front matter** — all key stats as queryable properties for Dataview
-- 🔄 **Re-import** — running the importer again on the same character updates the existing note in place, and a **Refresh** button on the note itself does the same with one click
-- 🎲 **Dice Roller** — d4 through d100 with toast notifications and roll history
-- 🗺️ **Interactive Character Sheet** — full visual overlay with HP tracking, rolling, spell slots, and more
-
----
-
-## Features & Bugs
-
-### Features
-If you want to see a feature added to this plugin, open an issue with the label **Enhancement**. If it fits the plugin's goals it will be included in the next major or minor update.
-
-### Bugs
-If you find a bug, open an issue with the label **Bug**. All bugs will be addressed as soon as possible and fixed in the next major, minor, or patch release.
+| Feature | Description |
+|---|---|
+| 📋 **Full Character Sheet** | Ability scores, saving throws, skills, HP, AC, speed, proficiency bonus |
+| ⚔️ **Equipment** | Inventory table with equipped status and weight |
+| 📖 **Spells** | Grouped by level, with school, cast time, range, concentration, and prepared status |
+| 🌟 **Features & Traits** | Racial traits, feats, personality, ideals, bonds, flaws |
+| 💰 **Currency** | All coin types tracked automatically |
+| 📜 **Backstory & Notes** | Backstory and campaign notes pulled straight from D&D Beyond |
+| 🏷️ **YAML Front Matter** | Key stats exposed as queryable properties for Dataview |
+| 🔄 **Re-import / Refresh** | One-click refresh button updates the existing note in place |
+| 🎲 **Dice Roller** | d4 through d100, with toast notifications and roll history |
+| 🗺️ **Interactive Character Sheet** | Full visual overlay with HP tracking, rolling, and spell slots |
 
 ---
 
-## Installation
+## 📦 Installation
 
 ### Automatic (recommended for stable releases)
-1. Open Settings.
-2. In the side menu, select Community plugins.
-3. Select Browse.
-4. Search "DnD Beyond Importer".
-5. Select the plugin.
-6. Select Install.
-7. Enable the plugin.
-8. Configure plugin settings. (Optional)
+1. Open **Settings**
+2. Go to **Community plugins**
+3. Click **Browse**
+4. Search **"DnD Beyond Importer"**
+5. Click **Install**, then **Enable**
+6. Configure plugin settings *(optional)*
 
-### Manual (recommended until published to the community directory / latest releases)
-
-1. Download the latest release zip from the Releases page (or build from source — see below).
+### Manual
+1. Download the latest release zip from the [Releases page](https://github.com/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin/releases) (or build from source below)
 2. Unzip into your vault's plugin directory:
    ```
    <YourVault>/.obsidian/plugins/dndbeyond-importer/
    ```
-   The folder needs `main.js`, `manifest.json`, and `styles.css`.
-3. Go to Obsidian → Settings → Community Plugins and enable **DnD Beyond Importer**.
+   The folder needs `main.js`, `manifest.json`, and `styles.css`
+3. Go to **Obsidian → Settings → Community Plugins** and enable **DnD Beyond Importer**
 
 ### Build from source
-
 ```bash
 git clone https://github.com/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin.git
 cd dndbeyond-importer
 npm install
 npm run build
 ```
-
 This produces `main.js` in the project root.
 
 ---
 
-## Usage
+## 🚀 Usage
 
 ### Importing a character
 
-**Ribbon:** click the ⚔️ sword icon in the left sidebar.
-
+**Ribbon:** click the ⚔️ sword icon in the left sidebar
 **Command palette:** `Ctrl/Cmd + P` → *DnD Beyond Importer: Import character from D&D Beyond*
 
-Any of these formats work as input:
-- Full URL: `https://www.dndbeyond.com/characters/137202151/GpDg8C`
-- Short URL: `https://www.dndbeyond.com/characters/137202151`
-- Bare ID: `137202151`
+Any of these input formats work:
+- Full URL — `https://www.dndbeyond.com/characters/137202151/GpDg8C`
+- Short URL — `https://www.dndbeyond.com/characters/137202151`
+- Bare ID — `137202151`
 
 > ⚠️ The character sheet must be set to **Public** on D&D Beyond. Private sheets can't be fetched.
 
----
-
 ### Interactive Character Sheet
 
-After importing, click the **⚔️ Open Interactive Character Sheet** button at the top of any character note to open the full interactive sheet as an overlay. The Markdown note remains untouched underneath.
+After importing, click the **⚔️ Open Interactive Character Sheet** button at the top of any character note to open the full interactive overlay. The Markdown note underneath stays untouched.
 
-Next to it, the **🔄 Refresh from D&D Beyond** button re-fetches the character and updates the note in place without leaving the note — useful after leveling up or changing equipment on D&D Beyond. The button shows a brief ✅ or ❌ confirmation once the refresh finishes, and is disabled on notes that don't have a D&D Beyond character ID.
+Next to it, **🔄 Refresh from D&D Beyond** re-fetches the character and updates the note in place — handy after leveling up or changing equipment. It shows a brief ✅ or ❌ confirmation, and is disabled on notes without a D&D Beyond character ID.
 
-The interactive sheet includes HP tracking, ability score rolls, saving throws, skills, actions & attacks, spell slots, spells, equipment, features & traits, session notes, a live roll log, currency, and proficiencies.
-
----
+The interactive sheet covers HP tracking, ability score rolls, saving throws, skills, actions & attacks, spell slots, spells, equipment, features & traits, session notes, a live roll log, currency, and proficiencies.
 
 ### Standalone Dice Roller
 
-**Ribbon:** click the 🎲 dice icon in the left sidebar.
-
+**Ribbon:** click the 🎲 dice icon in the left sidebar
 **Command palette:** *DnD Beyond Importer: Open Dice Roller*
 
-Available dice: d4, d6, d8, d10, d12, d20, d100.
-
-Each roll shows up in the modal, fires a toast notification (e.g. `🎲 d20: 17`), and gets logged to the roll history with a timestamp. History is capped at the last 50 rolls and can be wiped with **Clear History**. It persists across modal opens for the duration of the session.
+Available dice: d4, d6, d8, d10, d12, d20, d100. Each roll appears in the modal, fires a toast (e.g. `🎲 d20: 17`), and logs to history with a timestamp. History caps at the last 50 rolls and can be wiped with **Clear History** — it persists for the session.
 
 ---
 
-## Settings
+## 📸 Screenshots
+
+<p align="center">
+  <img src="assets/1.png" width="47%" alt="Importer">
+  <img src="assets/2.png" width="47%" alt="Character sheet">
+</p>
+
+<p align="center">
+  <img src="assets/3.png" width="47%" alt="Dice roller">
+  <img src="assets/4.png" width="47%" alt="Interactive character sheet">
+</p>
+
+<p align="center">
+  <img src="assets/demo.gif" alt="Import → open sheet → roll dice → refresh, demo">
+</p>
+
+---
+
+## ⚙️ Settings
 
 | Setting | Default | Description |
 |:---|:---:|:---|
@@ -115,7 +137,7 @@ Each roll shows up in the modal, fires a toast notification (e.g. `🎲 d20: 17`
 
 ---
 
-## Note structure
+## 🗂 Note structure
 
 ```
 ---                          ← YAML front matter (queryable with Dataview)
@@ -142,18 +164,46 @@ tags: ["dnd-character", …]
 
 ---
 
-## A note on the D&D Beyond API
+## 🔌 A note on the D&D Beyond API
 
 The plugin fetches from an unofficial internal endpoint:
 ```
 https://character-service.dndbeyond.com/character/v5/character/{ID}
 ```
-This isn't officially documented or supported by D&D Beyond / Wizards of the Coast and could change or break without warning. The plugin is read-only — it never writes anything back to D&D Beyond.
+This isn't officially documented or supported by D&D Beyond / Wizards of the Coast and could change or break without warning. The plugin is **read-only** — it never writes anything back to D&D Beyond.
 
 **Mobile:** character fetching uses Obsidian's `requestUrl` API to work around browser CORS restrictions. This works reliably on desktop (Windows, macOS, Linux). On mobile, the request may be blocked depending on your network setup.
 
 ---
 
-## License
+## 🐛 Features & Bugs
 
-MIT
+**Feature requests** — open an issue labeled **Enhancement**. If it fits the plugin's goals, it'll land in the next major or minor update.
+
+**Bugs** — open an issue labeled **Bug**. All bugs are addressed as soon as possible and fixed in the next major, minor, or patch release.
+
+---
+
+## 👥 Contributors
+
+<a href="https://github.com/Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Webcreator3478/D-D-Beyond-Character-Importer---Obsidian-Plugin" alt="Contributors">
+</a>
+
+---
+
+## ❤️ Support
+
+<p align="center">
+  <a href="https://ko-fi.com/jktaisa">
+    <img src="https://img.shields.io/badge/☕_Buy_me_a_coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" width="260">
+  </a>
+</p>
+
+---
+
+<p align="center">
+Built with ❤️ for the Obsidian and D&D community.
+<br><br>
+⭐ Star this repository if you find it useful.
+</p>
