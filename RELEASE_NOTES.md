@@ -2,8 +2,10 @@
 
 ## v1.1.2
 
-### New features
+### New
 - **Refresh button on character notes** — every imported character note now has a **🔄 Refresh from D&D Beyond** button next to **⚔️ Open Interactive Character Sheet**, letting you re-fetch the character and update the note in place without opening the import dialog. The button shows a brief ✅ "Refreshed" or ❌ "Refresh failed" flash so it's clear whether the refresh worked, then resets automatically.
+- **Styles added**. The plugin is from now on compatible with themes.
+- Refresh button
 
 ### Bug fixes
 - The refresh button is now disabled (with an explanatory tooltip) on notes that don't have a D&D Beyond character ID, instead of attempting — and silently failing — an import with a meaningless fallback ID.
@@ -11,6 +13,18 @@
 - Replaced `setAttribute("disabled", "true")` with the standard `button.disabled = true` on the refresh button and the 5etools fetch button, which is the simpler and more correct way to toggle button state.
 - Moved the character-sheet launcher buttons' styling out of inline `style.cssText` strings and into `styles.css` (`.dndbi-launcher-row`, `.dndbi-sheet-btn`, `.dndbi-refresh-btn`), improving readability and maintainability.
 - Fixed a broken `buildSavingThrows()` helper that referenced `key`, `subType`, and `cells` outside of any enclosing scope — restored the missing `.map()` callback so saving throws render correctly again.
+
+### New Contributors
+
+<p align="center">
+  <a href="https://github.com/mstelz">
+    <img src="https://github.com/mstelz.png" width="120" alt="Mike S.">
+    <br><br>
+    <b>Mike S.</b>
+  </a>
+</p>
+
+Thank you for contributing to this project! 🎉
 
 ---
 
