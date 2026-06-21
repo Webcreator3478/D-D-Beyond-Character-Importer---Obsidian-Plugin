@@ -949,6 +949,30 @@
 	font-size: 12px;
 }
 
+/* Advantage / Disadvantage badges (skills & saving throws) */
+.dndbi-cs-adv-badge {
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+	border-radius: 4px;
+	padding: 2px 4px;
+}
+
+.dndbi-cs-adv-badge.is-advantage {
+	color: #4ade80;
+	border: 1px solid #4ade80;
+}
+
+.dndbi-cs-adv-badge.is-disadvantage {
+	color: #ef4444;
+	border: 1px solid #ef4444;
+}
+
+.dndbi-cs-adv-badge.is-none {
+	color: var(--text-faint);
+	border: 1px solid var(--background-modifier-border);
+}
+
 /* Actions */
 .dndbi-cs-action-row {
 	display: flex;

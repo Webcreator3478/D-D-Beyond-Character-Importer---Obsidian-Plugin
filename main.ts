@@ -241,6 +241,32 @@ function getAllModifiers(char: DdbCharacter): DdbModifier[] {
 	];
 }
 
+// Advantage/disadvantage on a saving throw or skill check. Checks both the
+// specific subType (e.g. "perception") and the broad subType D&D Beyond uses
+// for blanket grants (e.g. "saving-throws" / "ability-checks"). Per 5e rules,
+// if a creature has both advantage and disadvantage on the same roll they
+// cancel out, so that case resolves to "none" — same as having neither.
+// Every roll always resolves to one of the three states; nothing is ever
+// "no status" — it's an explicit import of what D&D Beyond reports.
+type AdvState = "advantage" | "disadvantage" | "none";
+
+function getAdvantageState(allMods: DdbModifier[], subType: string, broadSubType: string): AdvState {
+	const hasAdv = allMods.some((m) => m.type === "advantage" && (m.subType === subType || m.subType === broadSubType));
+	const hasDis = allMods.some((m) => m.type === "disadvantage" && (m.subType === subType || m.subType === broadSubType));
+	if (hasAdv && hasDis) return "none";
+	if (hasAdv) return "advantage";
+	if (hasDis) return "disadvantage";
+	return "none";
+}
+
+// Always renders a marker — every roll has an explicit imported status,
+// including "none", not just the advantage/disadvantage cases.
+function formatAdvMarkerMd(advState: AdvState): string {
+	if (advState === "advantage") return ` <span style="color:#22c55e;font-weight:700;">▲A</span>`;
+	if (advState === "disadvantage") return ` <span style="color:#ef4444;font-weight:700;">▼D</span>`;
+	return ` <span style="color:#9ca3af;">–N</span>`;
+}
+
 function calcHP(char: DdbCharacter, conScore: number, totalLevel: number, allMods: DdbModifier[]): { max: number; current: number; temp: number } {
 	const base = char.baseHitPoints ?? 0;
 	const bonus = char.bonusHitPoints ?? 0;
@@ -544,7 +570,9 @@ function buildSavingThrows(
 		);
 		const total = isProficient ? base + pb : base;
 		const str = total >= 0 ? `+${total}` : `${total}`;
-		return isProficient ? `**${str}** ✓` : str;
+		const advState = getAdvantageState(allMods, subType, "saving-throws");
+		const advMarker = formatAdvMarkerMd(advState);
+		return (isProficient ? `**${str}** ✓` : str) + advMarker;
 	});
 
 	let md = `## Saving Throws\n\n`;
@@ -601,10 +629,12 @@ function buildSkillsSection(
 
 		const bonusStr = bonus >= 0 ? `+${bonus}` : `${bonus}`;
 		const marker = expertise ? " ★" : prof ? " ✓" : "";
-		md += `| ${skill.name}${marker} | ${skill.stat.toUpperCase()} | ${bonusStr} |\n`;
+		const advState = getAdvantageState(allMods, skill.key, "ability-checks");
+		const advMarker = formatAdvMarkerMd(advState);
+		md += `| ${skill.name}${marker} | ${skill.stat.toUpperCase()} | ${bonusStr}${advMarker} |\n`;
 	}
 
-	md += "\n*✓ = Proficient, ★ = Expertise*\n\n";
+	md += "\n*✓ = Proficient, ★ = Expertise, ▲A = Advantage, –N = None, ▼D = Disadvantage*\n\n";
 	return md;
 }
 
@@ -1557,6 +1587,18 @@ class FullCharacterSheetModal extends Modal {
 		return btn;
 	}
 
+	// Always renders a badge — every roll has an explicit imported status
+	// from D&D Beyond (advantage / none / disadvantage), not just the
+	// advantage/disadvantage cases.
+	private advBadge(parent: HTMLElement, advState: AdvState): HTMLElement {
+		const badge = parent.createEl("span");
+		const variant = advState === "advantage" ? "is-advantage" : advState === "disadvantage" ? "is-disadvantage" : "is-none";
+		badge.setText(advState === "advantage" ? "▲A" : advState === "disadvantage" ? "▼D" : "–N");
+		badge.addClass("dndbi-cs-adv-badge", variant);
+		badge.setAttr("title", advState === "advantage" ? "Advantage" : advState === "disadvantage" ? "Disadvantage" : "No advantage/disadvantage");
+		return badge;
+	}
+
 	// ── onOpen ───────────────────────────────────────────────────────────────
 
 	onOpen(): void {
@@ -1659,8 +1701,8 @@ class FullCharacterSheetModal extends Modal {
 			const hpPillVal = coreRow.querySelector<HTMLElement>(".dndbi-cs-pill-value");
 			if (hpPillVal) hpPillVal.setText(`${hpSt.current}/${hpSt.max}`);
 			// update death save pips
-			dsSPips.forEach((p, i) => { p.toggleClass("dndbi-cs-ds-pip--filled", i < hpSt.dsS); });
-			dsFPips.forEach((p, i) => { p.toggleClass("dndbi-cs-ds-pip--filled", i < hpSt.dsF); });
+			dsSPips.forEach((p, i) => { p.toggleClass("is-filled", i < hpSt.dsS); });
+			dsFPips.forEach((p, i) => { p.toggleClass("is-filled", i < hpSt.dsF); });
 			this.saveHP(hpSt);
 		};
 
@@ -1730,7 +1772,7 @@ class FullCharacterSheetModal extends Modal {
 		dsSect.addClass("dndbi-cs-ds-sect");
 
 		const makePips = (
-			colorClass: "dndbi-cs-ds-pip--success" | "dndbi-cs-ds-pip--failure",
+			colorClass: "is-success" | "is-failure",
 			pips: HTMLElement[],
 			get: () => number,
 			set: (n: number) => void,
@@ -1744,8 +1786,8 @@ class FullCharacterSheetModal extends Modal {
 				pips.push(p);
 			}
 		};
-		makePips("dndbi-cs-ds-pip--success", dsSPips, () => hpSt.dsS, (n) => { hpSt.dsS=n; });
-		makePips("dndbi-cs-ds-pip--failure", dsFPips, () => hpSt.dsF, (n) => { hpSt.dsF=n; });
+		makePips("is-success", dsSPips, () => hpSt.dsS, (n) => { hpSt.dsS=n; });
+		makePips("is-failure", dsFPips, () => hpSt.dsF, (n) => { hpSt.dsF=n; });
 		const dsRstBtn = dsSect.createEl("button"); dsRstBtn.setText("Reset Saves");
 		dsRstBtn.addClass("dndbi-cs-ds-rst-btn");
 		dsRstBtn.addEventListener("click", () => { hpSt.dsS=0; hpSt.dsF=0; addHPLog("🔄 Death saves reset"); renderHP(); });
@@ -1805,6 +1847,8 @@ class FullCharacterSheetModal extends Modal {
 			dot.setText(isProficient ? "●" : "○");
 			dot.addClass(isProficient ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
 			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.addClass("dndbi-cs-save-lbl");
+			const advState = getAdvantageState(allMods, subType, "saving-throws");
+			this.advBadge(left, advState);
 			this.rollBtn(row, `${label} Save`, modNum);
 		}
 
@@ -1847,6 +1891,8 @@ class FullCharacterSheetModal extends Modal {
 			dot.setText(isExpertise ? "★" : isProficient ? "●" : "○");
 			dot.addClass(isExpertise ? "dndbi-cs-dot--expert" : isProficient ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
 			const _lbl = left.createEl("span"); _lbl.setText(label); _lbl.addClass("dndbi-cs-skill-lbl");
+			const advState = getAdvantageState(allMods, subType, "ability-checks");
+			this.advBadge(left, advState);
 			this.rollBtn(row, `${label} Check`, bonus);
 		}
 
@@ -2409,6 +2455,19 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			name: "Open Dice Roller",
 			callback: () => {
 				new DiceRollerModal(this.app, this as unknown as DiceRollerModal["plugin"]).open();
+			},
+		});
+
+		this.addCommand({
+			id: "open-hp-tracker",
+			name: "Open HP Tracker (legacy)",
+			callback: () => {
+				const firstId = this.charCache.keys().next().value;
+				if (!firstId) {
+					new Notice("Import a D&D Beyond character first.", 3000);
+					return;
+				}
+				new HPTrackerModal(this.app, this as unknown as HPTrackerModal["plugin"], firstId).open();
 			},
 		});
 
