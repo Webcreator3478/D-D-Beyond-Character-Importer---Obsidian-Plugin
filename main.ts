@@ -845,7 +845,6 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 	const strMod = Math.floor((stats.str - 10) / 2);
 	const dexMod = Math.floor((stats.dex - 10) / 2);
 
-	const allMods = getAllModifiers(char);
 	for (const item of char.inventory ?? []) {
 		const def = item.definition as (DdbDefinition & {
 			weaponBehaviors?: Array<{attackType?: number; damage?: {diceString?: string; fixedValue?: number}; properties?: Array<{name?: string}>}>;
@@ -1033,11 +1032,11 @@ class HPTrackerModal extends Modal {
 		const tempEl = displayEl.createEl("div", { cls: "dndbi-hpmodal-temp" });
 
 		const updateDisplay = () => {
-			const total = tracker!.currentHp + tracker!.tempHp;
-			hpTextEl.setText(`${total}/${tracker!.maxHp} HP`);
-			tempEl.setText(tracker!.tempHp > 0 ? `Temp: ${tracker!.tempHp}` : "");
+			const total = tracker.currentHp + tracker.tempHp;
+			hpTextEl.setText(`${total}/${tracker.maxHp} HP`);
+			tempEl.setText(tracker.tempHp > 0 ? `Temp: ${tracker.tempHp}` : "");
 
-			const newPercent = Math.max(0, (tracker!.currentHp / tracker!.maxHp) * 100);
+			const newPercent = Math.max(0, (tracker.currentHp / tracker.maxHp) * 100);
 			hpFillEl.setCssStyles({ width: `${newPercent}%` });
 			hpFillEl.removeClass("dndbi-hpmodal-bar-fill--high", "dndbi-hpmodal-bar-fill--mid", "dndbi-hpmodal-bar-fill--low");
 			if (newPercent > 50) {
@@ -1057,40 +1056,40 @@ class HPTrackerModal extends Modal {
 		const currentInputEl = activeDocument.createElement("input");
 		currentInputEl.className = "dndbi-hpmodal-number-input";
 		currentInputEl.type = "number";
-		currentInputEl.value = String(tracker!.currentHp);
+		currentInputEl.value = String(tracker.currentHp);
 		currentInputEl.min = "0";
-		currentInputEl.max = String(tracker!.maxHp);
+		currentInputEl.max = String(tracker.maxHp);
 		currentCtrlEl.appendChild(currentInputEl);
 		currentInputEl.addEventListener("change", () => {
-			tracker!.currentHp = Math.max(0, Math.min(tracker!.maxHp, Number(currentInputEl.value)));
+			tracker.currentHp = Math.max(0, Math.min(tracker.maxHp, Number(currentInputEl.value)));
 			updateDisplay();
 		});
 
 		const minusBtn = currentCtrlEl.createEl("button", { text: "−5", cls: "dndbi-hpmodal-step-btn" });
 		minusBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.max(0, tracker!.currentHp - 5);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.max(0, tracker.currentHp - 5);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const minusOneBtn = currentCtrlEl.createEl("button", { text: "−1", cls: "dndbi-hpmodal-step-btn" });
 		minusOneBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.max(0, tracker!.currentHp - 1);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.max(0, tracker.currentHp - 1);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const plusOneBtn = currentCtrlEl.createEl("button", { text: "+1", cls: "dndbi-hpmodal-step-btn" });
 		plusOneBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 1);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 1);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
 		const plusFiveBtn = currentCtrlEl.createEl("button", { text: "+5", cls: "dndbi-hpmodal-step-btn" });
 		plusFiveBtn.addEventListener("click", () => {
-			tracker!.currentHp = Math.min(tracker!.maxHp, tracker!.currentHp + 5);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.currentHp = Math.min(tracker.maxHp, tracker.currentHp + 5);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
@@ -1102,17 +1101,17 @@ class HPTrackerModal extends Modal {
 		const tempInputEl = activeDocument.createElement("input");
 		tempInputEl.className = "dndbi-hpmodal-number-input";
 		tempInputEl.type = "number";
-		tempInputEl.value = String(tracker!.tempHp);
+		tempInputEl.value = String(tracker.tempHp);
 		tempInputEl.min = "0";
 		tempCtrlEl.appendChild(tempInputEl);
 		tempInputEl.addEventListener("change", () => {
-			tracker!.tempHp = Math.max(0, Number(tempInputEl.value));
+			tracker.tempHp = Math.max(0, Number(tempInputEl.value));
 			updateDisplay();
 		});
 
 		const tempClearBtn = tempCtrlEl.createEl("button", { text: "Clear", cls: "dndbi-hpmodal-step-btn" });
 		tempClearBtn.addEventListener("click", () => {
-			tracker!.tempHp = 0;
+			tracker.tempHp = 0;
 			tempInputEl.value = "0";
 			updateDisplay();
 		});
@@ -1125,13 +1124,13 @@ class HPTrackerModal extends Modal {
 		const maxInputEl = activeDocument.createElement("input");
 		maxInputEl.className = "dndbi-hpmodal-number-input";
 		maxInputEl.type = "number";
-		maxInputEl.value = String(tracker!.maxHp);
+		maxInputEl.value = String(tracker.maxHp);
 		maxInputEl.min = "1";
 		maxCtrlEl.appendChild(maxInputEl);
 		maxInputEl.addEventListener("change", () => {
-			tracker!.maxHp = Math.max(1, Number(maxInputEl.value));
-			tracker!.currentHp = Math.min(tracker!.currentHp, tracker!.maxHp);
-			currentInputEl.value = String(tracker!.currentHp);
+			tracker.maxHp = Math.max(1, Number(maxInputEl.value));
+			tracker.currentHp = Math.min(tracker.currentHp, tracker.maxHp);
+			currentInputEl.value = String(tracker.currentHp);
 			updateDisplay();
 		});
 
@@ -2462,7 +2461,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			id: "open-hp-tracker",
 			name: "Open HP Tracker (legacy)",
 			callback: () => {
-				const firstId = this.charCache.keys().next().value;
+				const firstId: string | undefined = this.charCache.keys().next().value;
 				if (!firstId) {
 					new Notice("Import a D&D Beyond character first.", 3000);
 					return;
@@ -2692,7 +2691,8 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loaded = (await this.loadData()) as Partial<DnDBeyondImporterSettings> | null;
+		this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {});
 	}
 
 	async saveSettings() {

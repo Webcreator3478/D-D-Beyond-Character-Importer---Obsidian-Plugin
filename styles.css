@@ -1445,7 +1445,7 @@
 
 /* Content wrapper inside the modal */
 .dndbi-cs-content {
-    display: contents;
+    padding: 0;
 }
 
 /* Death save section wrapper (flex column) */
