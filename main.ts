@@ -1679,11 +1679,11 @@ class FullCharacterSheetModal extends Modal {
 
 		// HP bar
 		const barWrap = hpWrap.createEl("div");
-		barWrap.addClass("dndbi-cs-bar-wrap");
+		barWrap.addClass("dndbi-hp-bar-wrap");
 		const barFill = barWrap.createEl("div");
-		barFill.addClass("dndbi-cs-bar-fill");
+		barFill.addClass("dndbi-hp-bar-fill");
 		const barLbl = barWrap.createEl("div");
-		barLbl.addClass("dndbi-cs-bar-lbl");
+		barLbl.addClass("dndbi-hp-bar-label");
 
 		let hpSt = { ...hpState };
 
@@ -1694,8 +1694,9 @@ class FullCharacterSheetModal extends Modal {
 			const pct = Math.max(0, Math.min(100, (hpSt.current / hpSt.max) * 100));
 			// Width is data-driven so we must set it inline; colour uses CSS classes.
 			barFill.setCssStyles({ width: `${pct}%` });
-			barFill.removeClass("dndbi-cs-bar-fill--high", "dndbi-cs-bar-fill--mid", "dndbi-cs-bar-fill--low");
-			barFill.addClass(pct > 50 ? "dndbi-cs-bar-fill--high" : pct > 25 ? "dndbi-cs-bar-fill--mid" : "dndbi-cs-bar-fill--low");
+			barFill.classList.toggle("is-high", pct > 50);
+			barFill.classList.toggle("is-mid",  pct > 25 && pct <= 50);
+			barFill.classList.toggle("is-low",  pct <= 25);
 			barLbl.setText(`${hpSt.current} / ${hpSt.max} HP${hpSt.temp > 0 ? ` (+${hpSt.temp} temp)` : ""}`);
 			// refresh core stat pill
 			const hpPillVal = coreRow.querySelector<HTMLElement>(".dndbi-cs-pill-value");
@@ -2435,6 +2436,78 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		// ── Restore charCache from vault notes after an Obsidian restart ──────────
+		// charCache is in-memory only, so it's empty on every startup. Without this,
+		// the "Open Interactive Character Sheet" button always says "Import the
+		// character first" until the user hits Refresh — even though the note (and
+		// all its frontmatter stats) already exists in the vault.
+		// We wait for the metadata cache to be ready, then rebuild from frontmatter.
+		this.app.workspace.onLayoutReady(() => {
+			for (const file of this.app.vault.getMarkdownFiles()) {
+				const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+				if (!fm?.["dndbeyond_id"]) continue;
+				const id = String(fm["dndbeyond_id"] as number | string);
+				if (this.charCache.has(id)) continue; // already populated (e.g. just imported)
+				// Rebuild a minimal DdbCharacter from the frontmatter values so the
+				// interactive sheet and HP tracker have all the numbers they need.
+				const stats: Record<string, number> = {
+					str: Number(fm["str"] ?? 10),
+					dex: Number(fm["dex"] ?? 10),
+					con: Number(fm["con"] ?? 10),
+					int: Number(fm["int"] ?? 10),
+					wis: Number(fm["wis"] ?? 10),
+					cha: Number(fm["cha"] ?? 10),
+				};
+				const level = Number(fm["level"] ?? 1);
+				const pb = profBonus(level);
+				// Reconstruct a minimal DdbCharacter that satisfies FullCharacterSheetModal.
+				// We only populate the fields the sheet actually reads; everything else
+				// stays undefined (the sheet guards all optional accesses).
+				const char: DdbCharacter = {
+					id: Number(id),
+					name: String(fm["name"] ?? ""),
+					avatarUrl: fm["avatar_url"] as string | undefined,
+					baseHitPoints: Number(fm["hp_max"] ?? 10),
+					removedHitPoints: Number(fm["hp_max"] ?? 10) - Number(fm["hp_current"] ?? Number(fm["hp_max"] ?? 10)),
+					temporaryHitPoints: Number(fm["hp_temp"] ?? 0),
+					currentXp: Number(fm["xp"] ?? 0),
+					stats: [
+						{ id: 1, value: stats.str },
+						{ id: 2, value: stats.dex },
+						{ id: 3, value: stats.con },
+						{ id: 4, value: stats.int },
+						{ id: 5, value: stats.wis },
+						{ id: 6, value: stats.cha },
+					],
+					overrideStats: [],
+					bonusStats: [],
+					modifiers: {},
+					classes: (() => {
+						// Parse "Fighter 5 / Wizard 3" style class string back to DdbClass[]
+						const classStr = String(fm["class"] ?? "");
+						return classStr.split("/").map((part) => {
+							const trimmed = part.trim();
+							const m = trimmed.match(/^(.+?)\s+(\d+)$/);
+							return {
+								definition: { name: m ? m[1].trim() : trimmed },
+								level: m ? parseInt(m[2]) : level,
+							} as DdbClass;
+						});
+					})(),
+					race: {
+						fullName: String(fm["race"] ?? ""),
+						weightSpeeds: { normal: { walk: Number(fm["speed"] ?? 30) } },
+					},
+					background: { definition: { name: String(fm["background"] ?? "") } },
+					alignmentId: undefined,
+					inventory: [],
+					feats: [],
+					classSpells: [],
+				};
+				this.charCache.set(id, { char, stats, pb });
+			}
+		});
 
 		this.addSettingTab(new DnDBeyondSettingTab(this.app, this as unknown as DnDBeyondSettingTab["plugin"]));
 

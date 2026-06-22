@@ -1,5 +1,14 @@
 # Release Notes
 
+## v1.1.3
+
+### Bug fixes
+- Sheet won't open after restart. 'charCache' is wiped on restart. Added onLayoutReady in onload() to rebuild it from existing notes' frontmatter.
+- Hp bar fix in the Interactive character sheet.
+
+
+---
+
 ## v1.1.2
 
 ### New
@@ -14,7 +23,7 @@
 - Moved the character-sheet launcher buttons' styling out of inline `style.cssText` strings and into `styles.css` (`.dndbi-launcher-row`, `.dndbi-sheet-btn`, `.dndbi-refresh-btn`), improving readability and maintainability.
 - Fixed a broken `buildSavingThrows()` helper that referenced `key`, `subType`, and `cells` outside of any enclosing scope — restored the missing `.map()` callback so saving throws render correctly again.
 
-### New Contributors
+### New contributors
 
 <p align="center">
   <a href="https://github.com/mstelz">
