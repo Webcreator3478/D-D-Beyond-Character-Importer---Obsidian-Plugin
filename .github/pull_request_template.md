@@ -5,7 +5,7 @@
 <!-- What does this PR do? Why is it needed? What did u fix or added? -->
 
 ## 🔗 Related Issue (if applicable)
-Closes #<!-- issue number -->
+<!-- issue number -->
 
 ## ✅ Type of Change
 - [ ] Bug fix
