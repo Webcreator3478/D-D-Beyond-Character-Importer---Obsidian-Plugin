@@ -35,6 +35,12 @@ jobs:
         with:
           subject-path: main.js
 
+      # ── Attest styles.css provenance ────────────────────────────────────────
+      - name: Attest styles.css
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: styles.css
+
       # ── Create GitHub Release ───────────────────────────────────────────────
       - name: Read release notes
         id: notes
