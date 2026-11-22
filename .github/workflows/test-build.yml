@@ -1,0 +1,104 @@
+# .github/workflows/test-build.yml
+#
+# Manual "test build" of any branch.
+#
+# How to use: GitHub → Actions → "Test Build" → Run workflow → type the branch
+# name (default: main) → Run. When it finishes, open the run and download the
+# artifact from the "Artifacts" section at the bottom of the run page.
+# Unzip it into <vault>/.obsidian/plugins/<plugin-folder>/ (or use the folder
+# inside the zip as a new plugin folder) and reload Obsidian.
+#
+# NOTE: workflow_dispatch workflows only show up in the Actions tab once the file
+# exists on the default branch (main). The branch you pick below is the code that
+# gets built; the workflow file itself always comes from main.
+
+name: Test Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch (or tag / commit SHA) to build"
+        required: true
+        default: "main"
+        type: string
+      run_lint:
+        description: "Also run eslint (failures are reported but don't block the build)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ inputs.branch }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout ${{ inputs.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        if: ${{ inputs.run_lint }}
+        continue-on-error: true
+        run: npm run lint
+
+      # tsc type-check + esbuild production bundle (see package.json "build")
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          for f in main.js manifest.json styles.css; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing $f after build"
+              exit 1
+            fi
+          done
+          ls -la main.js manifest.json styles.css
+
+      # Branch name is passed through env (never interpolated into the script)
+      # so odd branch names can't inject shell commands.
+      - name: Package test build
+        id: pkg
+        env:
+          BRANCH_INPUT: ${{ inputs.branch }}
+        run: |
+          SAFE_BRANCH="$(echo "$BRANCH_INPUT" | sed 's/[^A-Za-z0-9._-]/-/g')"
+          SHA="$(git rev-parse --short HEAD)"
+          PLUGIN_ID="$(node -p "require('./manifest.json').id")"
+          VERSION="$(node -p "require('./manifest.json').version")"
+          NAME="${PLUGIN_ID}-test-${SAFE_BRANCH}-${SHA}"
+          mkdir -p "dist/${PLUGIN_ID}"
+          cp main.js manifest.json styles.css "dist/${PLUGIN_ID}/"
+          echo "artifact_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "plugin_id=${PLUGIN_ID}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Test build ready"
+            echo "- **Branch/ref:** \`${BRANCH_INPUT}\`"
+            echo "- **Commit:** \`${SHA}\`"
+            echo "- **Plugin:** \`${PLUGIN_ID}\` v${VERSION}"
+            echo "- **Artifact:** \`${NAME}\` (download it from the Artifacts section below)"
+            echo ""
+            echo "Unzip into \`<vault>/.obsidian/plugins/\` — the zip contains a \`${PLUGIN_ID}/\` folder with main.js, manifest.json and styles.css."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.artifact_name }}
+          path: dist/${{ steps.pkg.outputs.plugin_id }}
+          if-no-files-found: error
+          retention-days: 14
