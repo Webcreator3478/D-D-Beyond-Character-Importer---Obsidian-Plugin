@@ -109,6 +109,10 @@ interface DdbFeat {
 	definition?: DdbDefinition;
 }
 
+interface DdbClassFeature {
+	definition?: { name?: string; description?: string };
+}
+
 interface DdbRace {
 	fullName?: string;
 	baseName?: string;
@@ -119,6 +123,7 @@ interface DdbRace {
 interface DdbClass {
 	level?: number;
 	definition?: { name?: string };
+	classFeatures?: DdbClassFeature[];
 	stats?: DdbStat[];
 	overrideStats?: DdbStat[];
 	bonusStats?: DdbStat[];
@@ -371,7 +376,7 @@ function calcAC(char: DdbCharacter, dexScore: number, allStats: Record<number, n
 }
 
 // Initiative = DEX mod + any initiative bonuses (Alert, etc.) + proficiency
-// (if granted) or Jack of All Trades (half proficiency, rounded down).
+// (if granted) or, for the 2014 wording only, Jack of All Trades.
 function calcInitiative(char: DdbCharacter, dexScore: number, pb: number, allMods: DdbModifier[]): number {
 	let init = Math.floor((dexScore - 10) / 2);
 
@@ -392,8 +397,19 @@ function calcInitiative(char: DdbCharacter, dexScore: number, pb: number, allMod
 	const initProf = allMods.some((m) => m.type === "proficiency" && m.subType === "initiative");
 	if (initExpertise) init += pb * 2;
 	else if (initProf) init += pb;
-	else if (allMods.some((m) => m.type === "half-proficiency" && m.subType === "ability-checks"))
-		init += Math.floor(pb / 2);
+	else if (allMods.some((m) => m.type === "half-proficiency" && m.subType === "ability-checks")) {
+		// Jack of All Trades has two wordings. The 2014 text covers any check that
+		// doesn't already use your proficiency bonus, so it applies to a plain DEX
+		// initiative roll. The 2024 text only covers checks that use a skill
+		// proficiency you lack ("... that uses a skill proficiency you lack"), and a
+		// plain initiative roll uses no skill, so D&D Beyond does not add it.
+		// Both versions share the same modifier, so tell them apart by the feature text.
+		const joat = (char.classes ?? [])
+			.flatMap((c) => c.classFeatures ?? [])
+			.find((f) => f.definition?.name === "Jack of All Trades");
+		const skillOnly = /skill proficiency/i.test(joat?.definition?.description ?? "");
+		if (!skillOnly) init += Math.floor(pb / 2);
+	}
 
 	// 2024 Alert adds the proficiency bonus to initiative. If D&D Beyond didn't
 	// expose that as an explicit initiative modifier, fall back on the feat text.
@@ -556,7 +572,7 @@ dndbeyond_id: ${char.id}
 	// ── Interactive Sheet Button marker (post-processor picks this up) ────────
 	md += `\`\`\`dnd-sheet-launcher\ncharId:${char.id}\n\`\`\`\n\n`;
 
-	// ── HP Tracker Widget ───────────────────────────────────────────────────
+	// ── HP Tracker Widget ────────────────────────────────────────────────────────
 	md += buildHPTrackerWidget(char.id, hp.max, hp.current, hp.temp);
 
 	// ── Core Stats ──────────────────────────────────────────────────────────
