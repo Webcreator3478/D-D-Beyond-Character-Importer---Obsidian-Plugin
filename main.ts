@@ -60,6 +60,7 @@ interface DdbModifier {
 	subType: string;
 	friendlySubtypeName?: string;
 	value?: number;
+	fixedValue?: number;
 	id?: number;
 }
 
@@ -108,6 +109,10 @@ interface DdbFeat {
 	definition?: DdbDefinition;
 }
 
+interface DdbClassFeature {
+	definition?: { name?: string; description?: string };
+}
+
 interface DdbRace {
 	fullName?: string;
 	baseName?: string;
@@ -118,6 +123,7 @@ interface DdbRace {
 interface DdbClass {
 	level?: number;
 	definition?: { name?: string };
+	classFeatures?: DdbClassFeature[];
 	stats?: DdbStat[];
 	overrideStats?: DdbStat[];
 	bonusStats?: DdbStat[];
@@ -190,6 +196,14 @@ interface DdbApiResponse {
 	data?: DdbCharacter;
 }
 
+// Values already computed at import time. The Interactive Sheet prefers these over
+// re-deriving AC/initiative, because after an Obsidian restart the cached character
+// is rebuilt from frontmatter and no longer has modifiers/inventory to compute from.
+interface CachedDerived {
+	ac?: number;
+	initiative?: number;
+}
+
 const DEFAULT_SETTINGS: DnDBeyondImporterSettings = {
 	outputFolder: "Characters",
 	includeSpells: true,
@@ -205,6 +219,10 @@ const DEFAULT_SETTINGS: DnDBeyondImporterSettings = {
 function modStr(score: number): string {
 	const mod = Math.floor((score - 10) / 2);
 	return mod >= 0 ? `+${mod}` : `${mod}`;
+}
+
+function signed(n: number): string {
+	return n >= 0 ? `+${n}` : `${n}`;
 }
 
 function profBonus(level: number): number {
@@ -315,6 +333,28 @@ function calcAC(char: DdbCharacter, dexScore: number, allStats: Record<number, n
 			}
 		}
 	}
+	// Natural armor / "set" AC while unarmored (Tortle, Lizardfolk, Draconic
+	// Resilience, Warforged, ...). D&D Beyond models these as race/class modifiers:
+	//   set    unarmored-armor-class   value N  → AC = 10 + N (+ DEX, see below)
+	//   set    ac-max-dex-modifier     value M  → DEX contribution capped at M
+	//   ignore unarmored-dex-ac-bonus           → DEX contribution is dropped entirely
+	// Tortle Natural Armor, for example, is set=7, max-dex=0, ignore-dex → AC 17 flat.
+	if (!wearingArmor) {
+		const ignoreUnarmoredDex = allMods.some(
+			(m) => m.type === "ignore" && m.subType === "unarmored-dex-ac-bonus"
+		);
+		const maxDexMod = allMods.find(
+			(m) => m.type === "set" && m.subType === "ac-max-dex-modifier" && m.value != null
+		)?.value;
+		for (const m of allMods) {
+			if (m.type === "set" && m.subType === "unarmored-armor-class" && m.value != null) {
+				const dexPart = ignoreUnarmoredDex
+					? 0
+					: maxDexMod != null ? Math.min(dexMod, maxDexMod) : dexMod;
+				bestAC = Math.max(bestAC, 10 + m.value + dexPart);
+			}
+		}
+	}
 	// Unarmored defense: Barbarian (10+DEX+CON), Monk (10+DEX+WIS).
 	// Shields are NOT armor (armorTypeId 4 is tracked separately as shieldBonus), so
 	// wearingArmor stays false when only a shield is equipped — allowing unarmored
@@ -333,6 +373,51 @@ function calcAC(char: DdbCharacter, dexScore: number, allStats: Record<number, n
 			bestAC += m.value;
 	}
 	return bestAC + shieldBonus;
+}
+
+// Initiative = DEX mod + any initiative bonuses (Alert, etc.) + proficiency
+// (if granted) or, for the 2014 wording only, Jack of All Trades.
+function calcInitiative(char: DdbCharacter, dexScore: number, pb: number, allMods: DdbModifier[]): number {
+	let init = Math.floor((dexScore - 10) / 2);
+
+	// Explicit initiative bonuses, e.g. 2014 Alert (+5).
+	let foundInitBonus = false;
+	for (const m of allMods) {
+		if (m.type === "bonus" && m.subType === "initiative") {
+			const v = m.value ?? m.fixedValue;
+			if (v != null) {
+				init += v;
+				foundInitBonus = true;
+			}
+		}
+	}
+
+	// Proficiency / expertise in initiative, otherwise Jack of All Trades.
+	const initExpertise = allMods.some((m) => m.type === "expertise" && m.subType === "initiative");
+	const initProf = allMods.some((m) => m.type === "proficiency" && m.subType === "initiative");
+	if (initExpertise) init += pb * 2;
+	else if (initProf) init += pb;
+	else if (allMods.some((m) => m.type === "half-proficiency" && m.subType === "ability-checks")) {
+		// Jack of All Trades has two wordings. The 2014 text covers any check that
+		// doesn't already use your proficiency bonus, so it applies to a plain DEX
+		// initiative roll. The 2024 text only covers checks that use a skill
+		// proficiency you lack ("... that uses a skill proficiency you lack"), and a
+		// plain initiative roll uses no skill, so D&D Beyond does not add it.
+		// Both versions share the same modifier, so tell them apart by the feature text.
+		const joat = (char.classes ?? [])
+			.flatMap((c) => c.classFeatures ?? [])
+			.find((f) => f.definition?.name === "Jack of All Trades");
+		const skillOnly = /skill proficiency/i.test(joat?.definition?.description ?? "");
+		if (!skillOnly) init += Math.floor(pb / 2);
+	}
+
+	// 2024 Alert adds the proficiency bonus to initiative. If D&D Beyond didn't
+	// expose that as an explicit initiative modifier, fall back on the feat text.
+	if (!foundInitBonus) {
+		const alert = (char.feats ?? []).find((f) => f.definition?.name === "Alert");
+		if (alert && /proficiency bonus/i.test(alert.definition?.description ?? "")) init += pb;
+	}
+	return init;
 }
 
 function alignmentName(id: number): string {
@@ -403,6 +488,21 @@ function computeRawStats(char: DdbCharacter): Record<string, number> {
 	};
 }
 
+// AC + initiative derived from the full API character. Used by buildMarkdown() and
+// Plugin.importCharacter() so the note and the cached sheet data always agree.
+function computeDerived(char: DdbCharacter, rawStats: Record<string, number>): { ac: number; initiative: number } {
+	const allMods = getAllModifiers(char);
+	const pb = profBonus(calcLevel(char.classes ?? []));
+	const byId: Record<number, number> = {
+		1: rawStats.str, 2: rawStats.dex, 3: rawStats.con,
+		4: rawStats.int, 5: rawStats.wis, 6: rawStats.cha,
+	};
+	return {
+		ac: calcAC(char, rawStats.dex, byId, allMods),
+		initiative: calcInitiative(char, rawStats.dex, pb, allMods),
+	};
+}
+
 function buildMarkdown(
 	data: DdbApiResponse,
 	settings: DnDBeyondImporterSettings
@@ -417,9 +517,8 @@ function buildMarkdown(
 	const rawStats = computeRawStats(char);
 	const allModifiers = getAllModifiers(char);
 
-	const rawStatsById: Record<number, number> = { 1: rawStats.str, 2: rawStats.dex, 3: rawStats.con, 4: rawStats.int, 5: rawStats.wis, 6: rawStats.cha };
 	const hp = calcHP(char, rawStats.con, totalLevel, allModifiers);
-	const ac = calcAC(char, rawStats.dex, rawStatsById, allModifiers);
+	const { ac, initiative } = computeDerived(char, rawStats);
 
 	const raceName: string = char.race?.fullName ?? char.race?.baseName ?? "Unknown Race";
 	const classString = classes
@@ -446,6 +545,7 @@ alignment: "${alignment}"
 xp: ${char.currentXp ?? 0}
 hp: ${hp.max}
 modifier: ${Math.floor((rawStats.dex - 10) / 2)}
+initiative: ${initiative}
 hp_current: ${hp.current}
 hp_temp: ${hp.temp}
 ac: ${ac}
@@ -472,14 +572,14 @@ dndbeyond_id: ${char.id}
 	// ── Interactive Sheet Button marker (post-processor picks this up) ────────
 	md += `\`\`\`dnd-sheet-launcher\ncharId:${char.id}\n\`\`\`\n\n`;
 
-	// ── HP Tracker Widget ───────────────────────────────────────────────────
+	// ── HP Tracker Widget ────────────────────────────────────────────────────────
 	md += buildHPTrackerWidget(char.id, hp.max, hp.current, hp.temp);
 
 	// ── Core Stats ──────────────────────────────────────────────────────────
 	md += `## Core Stats\n\n`;
 	md += `| HP | AC | Speed | Initiative | Proficiency Bonus |\n`;
 	md += `|:---:|:---:|:---:|:---:|:---:|\n`;
-	md += `| ${hp.current} / ${hp.max}${hp.temp > 0 ? ` (+${hp.temp} temp)` : ""} | ${ac} | ${char.race?.weightSpeeds?.normal?.walk ?? 30} ft | ${modStr(rawStats.dex)} | +${pb} |\n\n`;
+	md += `| ${hp.current} / ${hp.max}${hp.temp > 0 ? ` (+${hp.temp} temp)` : ""} | ${ac} | ${char.race?.weightSpeeds?.normal?.walk ?? 30} ft | ${signed(initiative)} | +${pb} |\n\n`;
 
 	// ── Ability Scores ──────────────────────────────────────────────────────
 	md += `## Ability Scores\n\n`;
@@ -1450,6 +1550,7 @@ class FullCharacterSheetModal extends Modal {
 	char: DdbCharacter;
 	stats: Record<string, number>;
 	pb: number;
+	derived: CachedDerived;
 	rollLog: Array<{ text: string; ts: string }> = [];
 
 	constructor(
@@ -1458,12 +1559,14 @@ class FullCharacterSheetModal extends Modal {
 		char: DdbCharacter,
 		stats: Record<string, number>,
 		pb: number,
+		derived: CachedDerived = {},
 	) {
 		super(app);
 		this.plugin = plugin;
 		this.char   = char;
 		this.stats  = stats;
 		this.pb     = pb;
+		this.derived = derived;
 		this.modalEl.setCssStyles({
 			width:     "min(900px, 95vw)",
 			maxHeight: "92vh",
@@ -1627,9 +1730,11 @@ class FullCharacterSheetModal extends Modal {
 		const raceName = char.race?.fullName ?? char.race?.baseName ?? "Unknown";
 		const sheetAllMods = getAllModifiers(char);
 		const sheetStatsById: Record<number, number> = { 1: stats.str, 2: stats.dex, 3: stats.con, 4: stats.int, 5: stats.wis, 6: stats.cha };
-		const ac = calcAC(char, stats.dex, sheetStatsById, sheetAllMods);
+		// Prefer values computed at import time (they survive an Obsidian restart,
+		// when `char` is rebuilt from frontmatter without modifiers/inventory).
+		const ac = this.derived.ac ?? calcAC(char, stats.dex, sheetStatsById, sheetAllMods);
 		const speed = char.race?.weightSpeeds?.normal?.walk ?? 30;
-		const initMod = this.mod(stats.dex);
+		const initMod = this.derived.initiative ?? calcInitiative(char, stats.dex, pb, sheetAllMods);
 		const hpState = this.loadHP();
 
 		const allMods = getAllModifiers(char);
@@ -2464,7 +2569,7 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 // was updated to `this.plugin.pluginSettings` to match.
 export default class DnDBeyondImporterPlugin extends Plugin {
 	pluginSettings!: DnDBeyondImporterSettings;
-	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number }> = new Map();
+	charCache: Map<string, { char: DdbCharacter; stats: Record<string, number>; pb: number } & CachedDerived> = new Map();
 	hpTracking: Map<string, { maxHp: number; currentHp: number; tempHp: number }> = new Map();
 	// Backs the HP tracker widget, spell-slot pips, equipment toggles, and session
 	// notes in the Interactive Character Sheet — replaces sessionStorage (see v1.1.1).
@@ -2507,6 +2612,16 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 				};
 				const level = Number(fm["level"] ?? 1);
 				const pb = profBonus(level);
+				// The note writes max HP as `hp` (there is no `hp_max` key). Treat it as an
+				// override so calcHP() returns it as-is instead of re-adding CON/level bonuses.
+				const hpMax = Number(fm["hp"] ?? 10);
+				const hpCurrent = Number(fm["hp_current"] ?? hpMax);
+				// AC and initiative were computed from the full API data at import time.
+				// The rebuilt character below has no modifiers/inventory, so it could not
+				// re-derive them (e.g. natural armor, Alert) — reuse the stored values.
+				const storedAc = fm["ac"] != null ? Number(fm["ac"]) : undefined;
+				const storedInit = fm["initiative"] != null ? Number(fm["initiative"])
+					: fm["modifier"] != null ? Number(fm["modifier"]) : undefined;
 				// Reconstruct a minimal DdbCharacter that satisfies FullCharacterSheetModal.
 				// We only populate the fields the sheet actually reads; everything else
 				// stays undefined (the sheet guards all optional accesses).
@@ -2514,8 +2629,9 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 					id: Number(id),
 					name: (fm["name"] as string | undefined) ?? "",
 					avatarUrl: fm["avatar_url"] as string | undefined,
-					baseHitPoints: Number(fm["hp_max"] ?? 10),
-					removedHitPoints: Number(fm["hp_max"] ?? 10) - Number(fm["hp_current"] ?? Number(fm["hp_max"] ?? 10)),
+					baseHitPoints: hpMax,
+					overrideHitPoints: hpMax,
+					removedHitPoints: hpMax - hpCurrent,
 					temporaryHitPoints: Number(fm["hp_temp"] ?? 0),
 					currentXp: Number(fm["xp"] ?? 0),
 					stats: [
@@ -2551,7 +2667,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 					feats: [],
 					classSpells: [],
 				};
-				this.charCache.set(id, { char, stats, pb });
+				this.charCache.set(id, { char, stats, pb, ac: storedAc, initiative: storedInit });
 			}
 		});
 
@@ -2777,7 +2893,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 					new Notice("Import the character first so the sheet has data to display.", 3000);
 					return;
 				}
-				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb).open();
+				new FullCharacterSheetModal(this.app, this, cached.char, cached.stats, cached.pb, { ac: cached.ac, initiative: cached.initiative }).open();
 			});
 
 			const refreshBtn = row.createEl("button", { cls: "dndbi-refresh-btn" });
@@ -2901,10 +3017,14 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 			throw e;
 		}
 
+		const rawStats = computeRawStats(char);
+		const derived = computeDerived(char, rawStats);
 		this.charCache.set(String(char.id), {
 			char,
-			stats: computeRawStats(char),
+			stats: rawStats,
 			pb: profBonus(calcLevel(char.classes ?? [])),
+			ac: derived.ac,
+			initiative: derived.initiative,
 		});
 
 		new Notice(`✅ Imported ${char.name ?? "character"}.`, 3000);
