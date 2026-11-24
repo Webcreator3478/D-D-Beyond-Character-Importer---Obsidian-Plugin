@@ -1,0 +1,83 @@
+# .github/workflows/manual-release.yml
+#
+# Manual release: Actions -> "Manual Release" -> Run workflow -> enter the version
+# (it must equal "version" in manifest.json, e.g. 1.1.5).
+# Builds main, attests main.js and styles.css like release.yml, creates the tag
+# (plain version number, no "v") and publishes the GitHub release with
+# main.js, manifest.json and styles.css attached.
+
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (must match manifest.json, e.g. 1.1.5)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The input goes through env, never straight into the script.
+      - name: Check version matches manifest.json
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          MANIFEST="$(node -p "require('./manifest.json').version")"
+          if [ "$MANIFEST" != "$VERSION" ]; then
+            echo "::error::Requested version '$VERSION' does not match manifest.json version '$MANIFEST'"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Attest main.js
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: main.js
+
+      - name: Attest styles.css
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: styles.css
+
+      - name: Extract release notes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          awk -v h="## v${VERSION}" 'index($0,h)==1{found=1;next} found&&/^## /{exit} found{print}' RELEASE_NOTES.md | sed '/^---$/d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "See RELEASE_NOTES.md for details." > release-notes.md
+          fi
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-notes.md
+          files: |
+            main.js
+            manifest.json
+            styles.css
