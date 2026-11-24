@@ -404,10 +404,15 @@ function calcInitiative(char: DdbCharacter, dexScore: number, pb: number, allMod
 		// proficiency you lack ("... that uses a skill proficiency you lack"), and a
 		// plain initiative roll uses no skill, so D&D Beyond does not add it.
 		// Both versions share the same modifier, so tell them apart by the feature text.
-		const joat = (char.classes ?? [])
-			.flatMap((c) => c.classFeatures ?? [])
-			.find((f) => f.definition?.name === "Jack of All Trades");
-		const skillOnly = /skill proficiency/i.test(joat?.definition?.description ?? "");
+		let joatDescription = "";
+		for (const cls of char.classes ?? []) {
+			for (const feature of cls.classFeatures ?? []) {
+				if (feature.definition?.name === "Jack of All Trades") {
+					joatDescription = feature.definition.description ?? "";
+				}
+			}
+		}
+		const skillOnly = /skill proficiency/i.test(joatDescription);
 		if (!skillOnly) init += Math.floor(pb / 2);
 	}
 
