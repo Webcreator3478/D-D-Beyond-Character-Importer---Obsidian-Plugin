@@ -1,5 +1,21 @@
 # Release Notes
 
+## v1.1.5
+
+### Bug Fixes
+- **Natural armor in AC:** Characters whose AC comes from a race or class feature instead of worn armor (Tortle, Lizardfolk, Draconic Resilience, Warforged and similar) now import the correct AC. Previously these characters fell back to 10 + DEX (for example a Tortle with AC 17 showed AC 9).
+- **Initiative:** Initiative is no longer hardcoded to the DEX modifier. It now includes initiative bonuses and proficiency or expertise in initiative from D&D Beyond (such as the Alert feat). Jack of All Trades is only added when the feature uses the 2014 wording; the 2024 wording needs a skill proficiency, so it does not apply to a plain DEX initiative roll, matching D&D Beyond.
+- **Interactive Character Sheet after a restart:** AC and initiative are now saved in the note's frontmatter (new `initiative` field) and reused when the sheet is rebuilt after restarting Obsidian, so the sheet no longer falls back to wrong values.
+- **Restored HP:** The restore after a restart read a `hp_max` key that the note never wrote. It now reads `hp`, so max HP is correct after a restart.
+- **Lint:** Replaced a `flatMap` lookup in the initiative code with a plain loop, which removes the `@typescript-eslint` unsafe-any warnings.
+
+### Notes
+- Existing character notes need one **Refresh from D&D Beyond** to gain the new `initiative` frontmatter field.
+- The Alert handling has not been tested against live Alert data yet.
+- Jack of All Trades is not yet added to non-proficient skill checks in the skills list.
+
+---
+
 ## v1.1.4
 
 ### Bug Fixes
