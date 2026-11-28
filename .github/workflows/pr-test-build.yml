@@ -1,0 +1,90 @@
+# .github/workflows/pr-test-build.yml
+#
+# Automatic test build for every pull request.
+#
+# Runs on each PR to main (or latest) and on every new push to it: lint, build,
+# verify the output files, then upload a ready-to-install plugin folder as an
+# artifact. Open the run, download the artifact from the "Artifacts" section,
+# unzip it into <vault>/.obsidian/plugins/ and reload Obsidian.
+#
+# For a build of any branch on demand, use the manual "Test Build" workflow.
+
+name: PR Test Build
+
+on:
+  pull_request:
+    branches: [main, latest]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A newer push to the same PR cancels the older build.
+concurrency:
+  group: pr-test-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build PR #${{ github.event.pull_request.number }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint
+
+      # tsc type-check + esbuild production bundle (see package.json "build")
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          for f in main.js manifest.json styles.css; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing $f after build"
+              exit 1
+            fi
+          done
+          ls -la main.js manifest.json styles.css
+
+      - name: Package test build
+        id: pkg
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          SHA="$(git rev-parse --short HEAD)"
+          PLUGIN_ID="$(node -p "require('./manifest.json').id")"
+          VERSION="$(node -p "require('./manifest.json').version")"
+          NAME="${PLUGIN_ID}-pr${PR_NUMBER}-${SHA}"
+          mkdir -p "dist/${PLUGIN_ID}"
+          cp main.js manifest.json styles.css "dist/${PLUGIN_ID}/"
+          echo "artifact_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "plugin_id=${PLUGIN_ID}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### PR test build ready"
+            echo "- **PR:** #${PR_NUMBER}"
+            echo "- **Commit:** \`${SHA}\`"
+            echo "- **Plugin:** \`${PLUGIN_ID}\` v${VERSION}"
+            echo "- **Artifact:** \`${NAME}\` (Artifacts section below)"
+            echo ""
+            echo "Unzip into \`<vault>/.obsidian/plugins/\`. The zip contains a \`${PLUGIN_ID}/\` folder with main.js, manifest.json and styles.css."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.artifact_name }}
+          path: dist/${{ steps.pkg.outputs.plugin_id }}
+          if-no-files-found: error
+          retention-days: 14
