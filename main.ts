@@ -59,9 +59,12 @@ interface DdbModifier {
 	type: string;
 	subType: string;
 	friendlySubtypeName?: string;
-	value?: number;
-	fixedValue?: number;
-	id?: number;
+	value?: number | null;
+	fixedValue?: number | null;
+	id?: number | string;
+	entityId?: number | null;
+	entityTypeId?: number | null;
+	isGranted?: boolean;
 }
 
 interface DdbModifiers {
@@ -73,17 +76,54 @@ interface DdbModifiers {
 	condition?: DdbModifier[];
 }
 
+interface DdbSpellModifier {
+	type?: string;
+	subType?: string;
+	die?: { diceString?: string | null } | null;
+}
+
+interface DdbRange {
+	rangeValue?: number | null;
+	origin?: string | null;
+}
+
+// Spells, feats and racial traits.
 interface DdbDefinition {
 	name?: string;
 	description?: string;
 	level?: number;
 	school?: string;
 	activation?: { activationTime?: number; activationType?: number };
-	range?: { rangeValue?: number; origin?: string };
+	range?: DdbRange | null;
 	concentration?: boolean;
-	armorClass?: number;
-	armorTypeId?: number;
-	weight?: number;
+	requiresAttackRoll?: boolean;
+	requiresSavingThrow?: boolean;
+	saveDcAbilityId?: number | null;
+	scaleType?: string | null;
+	modifiers?: DdbSpellModifier[];
+	atHigherLevels?: { additionalAttacks?: unknown[] } | null;
+}
+
+// Inventory items. Note: for items `range` / `longRange` are plain numbers.
+interface DdbItemDefinition {
+	name?: string;
+	description?: string;
+	armorClass?: number | null;
+	armorTypeId?: number | null;
+	weight?: number | null;
+	bundleSize?: number | null;
+	filterType?: string;
+	type?: string;
+	baseItemId?: number | null;
+	categoryId?: number | null;
+	attackType?: number | null;
+	damage?: { diceString?: string | null; fixedValue?: number | null } | null;
+	damageType?: string | null;
+	range?: number | null;
+	longRange?: number | null;
+	properties?: Array<{ name?: string }> | null;
+	weaponBehaviors?: unknown[] | null;
+	grantedModifiers?: DdbModifier[] | null;
 }
 
 interface DdbSpell {
@@ -96,9 +136,15 @@ interface DdbClassSpell {
 }
 
 interface DdbInventoryItem {
-	definition?: DdbDefinition;
+	definition?: DdbItemDefinition;
 	equipped?: boolean;
 	quantity?: number;
+}
+
+interface DdbCustomItem {
+	name?: string;
+	quantity?: number;
+	weight?: number | null;
 }
 
 interface DdbRacialTrait {
@@ -110,7 +156,7 @@ interface DdbFeat {
 }
 
 interface DdbClassFeature {
-	definition?: { name?: string; description?: string };
+	definition?: { name?: string; description?: string; requiredLevel?: number };
 }
 
 interface DdbRace {
@@ -120,9 +166,23 @@ interface DdbRace {
 	racialTraits?: DdbRacialTrait[];
 }
 
+interface DdbSpellRules {
+	levelSpellSlots?: number[][] | null;
+	multiClassSpellSlotDivisor?: number | null;
+	multiClassSpellSlotRounding?: number | null;
+}
+
+interface DdbClassDefinition {
+	name?: string;
+	canCastSpells?: boolean;
+	spellCastingAbilityId?: number | null;
+	spellRules?: DdbSpellRules | null;
+}
+
 interface DdbClass {
 	level?: number;
-	definition?: { name?: string };
+	definition?: DdbClassDefinition;
+	subclassDefinition?: DdbClassDefinition | null;
 	classFeatures?: DdbClassFeature[];
 	stats?: DdbStat[];
 	overrideStats?: DdbStat[];
@@ -150,10 +210,13 @@ interface DdbNotes {
 	otherNotes?: string;
 }
 
+// The API returns { level, used, available }; max is computed from the class
+// spell table. Notes restored after a restart carry { level, max, used }.
 interface DdbSpellSlot {
 	level?: number;
 	used?: number;
 	max?: number;
+	available?: number;
 }
 
 interface DdbCurrencies {
@@ -162,6 +225,25 @@ interface DdbCurrencies {
 	ep?: number;
 	gp?: number;
 	pp?: number;
+}
+
+// Attack-like actions granted by race / class / feats (e.g. Tortle Claws).
+interface DdbAction {
+	name?: string;
+	abilityModifierStatId?: number | null;
+	attackSubtype?: number | null;
+	attackTypeRange?: number | null;
+	damageTypeId?: number | null;
+	isProficient?: boolean;
+	dice?: { diceString?: string | null } | null;
+}
+
+interface DdbActions {
+	race?: DdbAction[] | null;
+	class?: DdbAction[] | null;
+	feat?: DdbAction[] | null;
+	background?: DdbAction[] | null;
+	item?: DdbAction[] | null;
 }
 
 interface DdbCharacter {
@@ -183,6 +265,8 @@ interface DdbCharacter {
 	modifiers?: DdbModifiers;
 	background?: DdbBackground;
 	inventory?: DdbInventoryItem[];
+	customItems?: DdbCustomItem[];
+	actions?: DdbActions | null;
 	feats?: DdbFeat[];
 	traits?: DdbTraits;
 	currencies?: DdbCurrencies;
@@ -214,6 +298,14 @@ const DEFAULT_SETTINGS: DnDBeyondImporterSettings = {
 	fiveEtoolsBaseUrl: "https://5e.tools",
 };
 
+// D&D Beyond entity type ids used on proficiency modifiers.
+const ET_SKILL = 1958004211;
+const ET_ARMOR = 174869515;
+const ET_WEAPON_CATEGORY = 660121713;
+const ET_WEAPON = 1782728300;
+
+const ABILITY_KEYS = ["str", "dex", "con", "int", "wis", "cha"];
+
 // ─── Data helpers ─────────────────────────────────────────────────────────────
 
 function modStr(score: number): string {
@@ -225,8 +317,16 @@ function signed(n: number): string {
 	return n >= 0 ? `+${n}` : `${n}`;
 }
 
+function abilityMod(score: number | undefined): number {
+	return Math.floor(((score ?? 10) - 10) / 2);
+}
+
 function profBonus(level: number): number {
 	return Math.ceil(level / 4) + 1;
+}
+
+function slugify(s: string | undefined | null): string {
+	return (s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 function getStatValue(
@@ -395,8 +495,10 @@ function calcInitiative(char: DdbCharacter, dexScore: number, pb: number, allMod
 	// Proficiency / expertise in initiative, otherwise Jack of All Trades.
 	const initExpertise = allMods.some((m) => m.type === "expertise" && m.subType === "initiative");
 	const initProf = allMods.some((m) => m.type === "proficiency" && m.subType === "initiative");
+	const initHalf = allMods.some((m) => m.type === "half-proficiency" && m.subType === "initiative");
 	if (initExpertise) init += pb * 2;
 	else if (initProf) init += pb;
+	else if (initHalf) init += Math.floor(pb / 2);
 	else if (allMods.some((m) => m.type === "half-proficiency" && m.subType === "ability-checks")) {
 		// Jack of All Trades has two wordings. The 2014 text covers any check that
 		// doesn't already use your proficiency bonus, so it applies to a plain DEX
@@ -449,11 +551,17 @@ function stripHtml(html: string): string {
 		.replace(/<\/li>/gi, "\n")
 		.replace(/<li>/gi, "- ")
 		.replace(/<[^>]+>/g, "")
+		// D&D Beyond inline tags such as [rules]D20 Test[/rules] or [condition]prone[/condition]
+		.replace(/\[\/?(?:rules|condition|spell|action|skill|sense|damage|wprop|magicitem|monster|item|weapon|armor|language|tool|source|vehicle|object|race|class|feat|background|bonus)\]/gi, "")
 		.replace(/&amp;/g, "&")
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&nbsp;/g, " ")
 		.replace(/&quot;/g, '"')
+		.replace(/&rsquo;|&lsquo;/g, "'")
+		.replace(/&rdquo;|&ldquo;/g, '"')
+		.replace(/&mdash;/g, "—")
+		.replace(/&ndash;/g, "–")
 		.trim();
 }
 
@@ -463,6 +571,240 @@ function extractCharacterId(url: string): string | null {
 	if (/^\d+$/.test(url.trim())) return url.trim();
 	return null;
 }
+
+// ─── Derived-value helpers (skills, proficiencies, spellcasting, slots, ...) ──
+
+const SKILL_DEFS = [
+	{ name: "Acrobatics", stat: "dex", key: "acrobatics" },
+	{ name: "Animal Handling", stat: "wis", key: "animal-handling" },
+	{ name: "Arcana", stat: "int", key: "arcana" },
+	{ name: "Athletics", stat: "str", key: "athletics" },
+	{ name: "Deception", stat: "cha", key: "deception" },
+	{ name: "History", stat: "int", key: "history" },
+	{ name: "Insight", stat: "wis", key: "insight" },
+	{ name: "Intimidation", stat: "cha", key: "intimidation" },
+	{ name: "Investigation", stat: "int", key: "investigation" },
+	{ name: "Medicine", stat: "wis", key: "medicine" },
+	{ name: "Nature", stat: "int", key: "nature" },
+	{ name: "Perception", stat: "wis", key: "perception" },
+	{ name: "Performance", stat: "cha", key: "performance" },
+	{ name: "Persuasion", stat: "cha", key: "persuasion" },
+	{ name: "Religion", stat: "int", key: "religion" },
+	{ name: "Sleight of Hand", stat: "dex", key: "sleight-of-hand" },
+	{ name: "Stealth", stat: "dex", key: "stealth" },
+	{ name: "Survival", stat: "wis", key: "survival" },
+];
+
+interface SkillResult {
+	name: string;
+	key: string;
+	stat: string;
+	bonus: number;
+	prof: boolean;
+	expertise: boolean;
+	half: boolean;
+	adv: AdvState;
+	passive: number;
+}
+
+// Skill bonuses including Jack of All Trades (half proficiency on checks you are
+// not proficient in) and passive scores (10 + bonus, ±5 for advantage/disadvantage).
+function computeSkills(char: DdbCharacter, stats: Record<string, number>, pb: number): SkillResult[] {
+	const allMods = getAllModifiers(char);
+	const jack = allMods.some((m) => m.type === "half-proficiency" && m.subType === "ability-checks");
+	return SKILL_DEFS.map((skill) => {
+		const base = abilityMod(stats[skill.stat]);
+		const expertise = allMods.some((m) => m.type === "expertise" && m.subType === skill.key);
+		const prof = allMods.some((m) => m.type === "proficiency" && m.subType === skill.key);
+		const half = !expertise && !prof && jack;
+		let bonus = base;
+		if (expertise) bonus += pb * 2;
+		else if (prof) bonus += pb;
+		else if (half) bonus += Math.floor(pb / 2);
+		const adv = getAdvantageState(allMods, skill.key, "ability-checks");
+		const passiveBonus = allMods
+			.filter((m) => m.type === "bonus" && m.subType === `passive-${skill.key}`)
+			.reduce((sum, m) => sum + (m.value ?? m.fixedValue ?? 0), 0);
+		const advShift = adv === "advantage" ? 5 : adv === "disadvantage" ? -5 : 0;
+		return {
+			name: skill.name,
+			key: skill.key,
+			stat: skill.stat,
+			bonus,
+			prof,
+			expertise,
+			half,
+			adv,
+			passive: 10 + bonus + passiveBonus + advShift,
+		};
+	});
+}
+
+interface ProficiencyLists {
+	languages: string[];
+	armor: string[];
+	weapons: string[];
+	tools: string[];
+}
+
+// Classifies proficiency modifiers by D&D Beyond entity type, so single weapons
+// ("Scimitar") and instruments / kits ("Lyre") are found, not only categories.
+function collectProficiencies(char: DdbCharacter): ProficiencyLists {
+	const allMods = getAllModifiers(char);
+	const nameOf = (m: DdbModifier): string => m.friendlySubtypeName ?? m.subType;
+	const unique = (arr: string[]): string[] => [...new Set(arr.filter(Boolean))];
+	const languages: string[] = [];
+	const armor: string[] = [];
+	const weapons: string[] = [];
+	const tools: string[] = [];
+	for (const m of allMods) {
+		if (m.type === "language") {
+			languages.push(nameOf(m));
+			continue;
+		}
+		if (m.type !== "proficiency") continue;
+		if (m.entityTypeId === ET_SKILL) continue;
+		if (m.subType.endsWith("saving-throws")) continue;
+		if (m.entityTypeId === ET_ARMOR || m.subType.includes("armor") || m.subType.includes("shield")) {
+			armor.push(nameOf(m));
+		} else if (m.entityTypeId === ET_WEAPON_CATEGORY || m.entityTypeId === ET_WEAPON || m.subType.includes("weapon")) {
+			weapons.push(nameOf(m));
+		} else if (m.entityTypeId != null || m.subType.includes("tool") || m.subType.includes("kit") || m.subType.includes("supplies")) {
+			tools.push(nameOf(m));
+		}
+	}
+	return { languages: unique(languages), armor: unique(armor), weapons: unique(weapons), tools: unique(tools) };
+}
+
+function isWeaponProficient(def: DdbItemDefinition, allMods: DdbModifier[]): boolean {
+	const profs = allMods.filter((m) => m.type === "proficiency");
+	for (const m of profs) {
+		if (m.subType === "simple-weapons" && def.categoryId === 1) return true;
+		if (m.subType === "martial-weapons" && def.categoryId === 2) return true;
+		if (m.entityTypeId === ET_WEAPON && m.entityId != null && m.entityId === def.baseItemId) return true;
+		if (m.subType === slugify(def.type) || m.subType === slugify(def.name)) return true;
+	}
+	// Homebrew / uncategorised weapons: nothing to check against, so assume proficient.
+	return def.categoryId == null && def.baseItemId == null;
+}
+
+interface Spellcasting {
+	abilityKey: string;
+	mod: number;
+	dc: number;
+	attack: number;
+}
+
+function computeSpellcasting(char: DdbCharacter, stats: Record<string, number>, pb: number): Spellcasting | null {
+	let abilityId: number | null = null;
+	for (const c of char.classes ?? []) {
+		const id = c.subclassDefinition?.spellCastingAbilityId ?? c.definition?.spellCastingAbilityId ?? null;
+		if (id != null) {
+			abilityId = id;
+			break;
+		}
+	}
+	if (abilityId == null) return null;
+	const abilityKey = ABILITY_KEYS[abilityId - 1];
+	if (!abilityKey) return null;
+	const mod = abilityMod(stats[abilityKey]);
+	const allMods = getAllModifiers(char);
+	const bonusOf = (subType: string): number =>
+		allMods
+			.filter((m) => m.type === "bonus" && m.subType === subType)
+			.reduce((sum, m) => sum + (m.value ?? m.fixedValue ?? 0), 0);
+	return {
+		abilityKey,
+		mod,
+		dc: 8 + pb + mod + bonusOf("spell-save-dc"),
+		attack: pb + mod + bonusOf("spell-attacks"),
+	};
+}
+
+function pickSpellRules(c: DdbClass): DdbSpellRules | null {
+	const has = (r: DdbSpellRules | null | undefined): r is DdbSpellRules =>
+		!!r && Array.isArray(r.levelSpellSlots) && r.levelSpellSlots.some((row) => row.some((n) => n > 0));
+	const sub = c.subclassDefinition?.spellRules;
+	if (has(sub)) return sub;
+	const base = c.definition?.spellRules;
+	if (has(base)) return base;
+	return null;
+}
+
+// Maximum spell slots per level (index 0 = level 1) from the class spell table.
+function computeSlotMaxes(char: DdbCharacter): number[] | null {
+	const casters: Array<{ cls: DdbClass; rules: DdbSpellRules }> = [];
+	for (const c of char.classes ?? []) {
+		const rules = pickSpellRules(c);
+		if (rules) casters.push({ cls: c, rules });
+	}
+	if (!casters.length) return null;
+	const rowFor = (rules: DdbSpellRules, level: number): number[] => {
+		const table = rules.levelSpellSlots ?? [];
+		const row = table[Math.min(Math.max(level, 0), table.length - 1)] ?? [];
+		return row.slice(0, 9);
+	};
+	if (casters.length === 1) return rowFor(casters[0].rules, casters[0].cls.level ?? 0);
+	// Multiclass: combine caster levels (Warlock pact slots are separate and skipped).
+	const combinable = casters.filter((c) => c.cls.definition?.name !== "Warlock");
+	const pool = combinable.length ? combinable : casters;
+	let casterLevel = 0;
+	for (const { cls, rules } of pool) {
+		const divisor = rules.multiClassSpellSlotDivisor && rules.multiClassSpellSlotDivisor > 0 ? rules.multiClassSpellSlotDivisor : 1;
+		const raw = (cls.level ?? 0) / divisor;
+		casterLevel += rules.multiClassSpellSlotRounding === 2 ? Math.ceil(raw) : Math.floor(raw);
+	}
+	const tableOwner = pool.find((c) => (c.rules.multiClassSpellSlotDivisor ?? 1) === 1) ?? pool[0];
+	return rowFor(tableOwner.rules, casterLevel);
+}
+
+function getSpellSlots(char: DdbCharacter): Array<{ level: number; max: number; used: number }> {
+	const raw = char.spellSlots;
+	const existing: DdbSpellSlot[] = Array.isArray(raw) ? raw : raw ? Object.values<DdbSpellSlot>(raw) : [];
+	const usedAt = (lvl: number): number => existing.find((s) => s.level === lvl)?.used ?? 0;
+	const maxes = computeSlotMaxes(char);
+	if (maxes) {
+		return maxes
+			.map((max, i) => ({ level: i + 1, max, used: Math.min(usedAt(i + 1), max) }))
+			.filter((s) => s.max > 0);
+	}
+	// Restored from frontmatter after a restart: entries already carry max.
+	return existing
+		.filter((s) => (s.max ?? 0) > 0)
+		.map((s) => ({ level: s.level ?? 0, max: s.max ?? 0, used: s.used ?? 0 }));
+}
+
+function getClassFeatureList(char: DdbCharacter): Array<{ className: string; level: number; features: Array<{ name: string; description: string }> }> {
+	const out: Array<{ className: string; level: number; features: Array<{ name: string; description: string }> }> = [];
+	for (const c of char.classes ?? []) {
+		const level = c.level ?? 0;
+		const seen = new Set<string>();
+		const features: Array<{ name: string; description: string }> = [];
+		for (const f of c.classFeatures ?? []) {
+			const def = f.definition;
+			const name = def?.name;
+			if (!def || !name) continue;
+			if ((def.requiredLevel ?? 1) > level) continue;
+			if (/ Subclass$/i.test(name)) continue;
+			if (seen.has(name)) continue;
+			seen.add(name);
+			features.push({ name, description: def.description ?? "" });
+		}
+		if (features.length) out.push({ className: c.definition?.name ?? "Unknown", level, features });
+	}
+	return out;
+}
+
+function itemWeight(def: DdbItemDefinition, qty: number): number | null {
+	if (def.weight == null) return null;
+	const bundle = def.bundleSize && def.bundleSize > 0 ? def.bundleSize : 1;
+	return (def.weight * qty) / bundle;
+}
+
+const DAMAGE_TYPES: Record<number, string> = {
+	1: "Bludgeoning", 2: "Piercing", 3: "Slashing", 4: "Necrotic", 5: "Acid", 6: "Cold",
+	7: "Fire", 8: "Lightning", 9: "Poison", 10: "Psychic", 11: "Radiant", 12: "Thunder", 13: "Force",
+};
 
 // ─── Markdown builder ─────────────────────────────────────────────────────────
 
@@ -478,7 +820,7 @@ function computeRawStats(char: DdbCharacter): Record<string, number> {
 	const allModifiers = getAllModifiers(char);
 	const modifierStatBonuses: DdbStat[] = allModifiers
 		.filter((m) => m.type === "bonus" && m.subType in statSubTypeToId && m.value != null)
-		.map((m) => ({ id: statSubTypeToId[m.subType], value: m.value! }));
+		.map((m) => ({ id: statSubTypeToId[m.subType], value: m.value ?? 0 }));
 	const effectiveBonusStats = [
 		...(char.bonusStats ?? []).filter((s) => s.value != null),
 		...modifierStatBonuses,
@@ -524,6 +866,10 @@ function buildMarkdown(
 
 	const hp = calcHP(char, rawStats.con, totalLevel, allModifiers);
 	const { ac, initiative } = computeDerived(char, rawStats);
+	const spellcasting = computeSpellcasting(char, rawStats, pb);
+	const slots = getSpellSlots(char);
+	const skills = computeSkills(char, rawStats, pb);
+	const passiveOf = (key: string): number => skills.find((s) => s.key === key)?.passive ?? 10;
 
 	const raceName: string = char.race?.fullName ?? char.race?.baseName ?? "Unknown Race";
 	const classString = classes
@@ -538,6 +884,14 @@ function buildMarkdown(
 		const cname = c.definition?.name;
 		if (cname) tags.push(cname.toLowerCase());
 	});
+
+	const slotMaxArr: number[] = [];
+	const slotUsedArr: number[] = [];
+	for (let lvl = 1; lvl <= 9; lvl++) {
+		const s = slots.find((x) => x.level === lvl);
+		slotMaxArr.push(s?.max ?? 0);
+		slotUsedArr.push(s?.used ?? 0);
+	}
 
 	// ── YAML Front Matter ───────────────────────────────────────────────────
 	let md = `---
@@ -556,7 +910,19 @@ hp_temp: ${hp.temp}
 ac: ${ac}
 speed: ${char.race?.weightSpeeds?.normal?.walk ?? 30}
 proficiency_bonus: ${pb}
-str: ${rawStats.str}
+passive_perception: ${passiveOf("perception")}
+passive_investigation: ${passiveOf("investigation")}
+passive_insight: ${passiveOf("insight")}
+`;
+	if (spellcasting) {
+		md += `spell_ability: "${spellcasting.abilityKey.toUpperCase()}"
+spell_save_dc: ${spellcasting.dc}
+spell_attack: ${spellcasting.attack}
+spell_slots_max: [${slotMaxArr.join(", ")}]
+spell_slots_used: [${slotUsedArr.join(", ")}]
+`;
+	}
+	md += `str: ${rawStats.str}
 dex: ${rawStats.dex}
 con: ${rawStats.con}
 int: ${rawStats.int}
@@ -596,7 +962,13 @@ dndbeyond_id: ${char.id}
 	md += buildSavingThrows(char, rawStats, pb);
 
 	// ── Skills ──────────────────────────────────────────────────────────────
-	md += buildSkillsSection(char, rawStats, pb);
+	md += buildSkillsSection(skills);
+
+	// ── Passive Scores ──────────────────────────────────────────────────────
+	md += `## Passive Scores\n\n`;
+	md += `| Perception | Investigation | Insight |\n`;
+	md += `|:---:|:---:|:---:|\n`;
+	md += `| ${passiveOf("perception")} | ${passiveOf("investigation")} | ${passiveOf("insight")} |\n\n`;
 
 	// ── Proficiencies & Languages ───────────────────────────────────────────
 	md += buildProficiencies(char);
@@ -611,8 +983,8 @@ dndbeyond_id: ${char.id}
 	}
 
 	// ── Equipment ───────────────────────────────────────────────────────────
-	if (settings.includeEquipment && (char.inventory?.length ?? 0) > 0) {
-		md += buildEquipment(char.inventory ?? []);
+	if (settings.includeEquipment && ((char.inventory?.length ?? 0) > 0 || (char.customItems?.length ?? 0) > 0)) {
+		md += buildEquipment(char.inventory ?? [], char.customItems ?? []);
 	}
 
 	// ── Actions & Attacks ───────────────────────────────────────────────────
@@ -628,7 +1000,7 @@ dndbeyond_id: ${char.id}
 
 	// ── Spells ──────────────────────────────────────────────────────────────
 	if (settings.includeSpells) {
-		const spellSection = buildSpells(char);
+		const spellSection = buildSpells(char, spellcasting, slots);
 		if (spellSection) md += spellSection;
 	}
 
@@ -688,96 +1060,35 @@ function buildSavingThrows(
 	return md;
 }
 
-function buildSkillsSection(
-	char: DdbCharacter,
-	stats: Record<string, number>,
-	pb: number
-): string {
-	const skillDefs = [
-		{ name: "Acrobatics", stat: "dex", key: "acrobatics" },
-		{ name: "Animal Handling", stat: "wis", key: "animal-handling" },
-		{ name: "Arcana", stat: "int", key: "arcana" },
-		{ name: "Athletics", stat: "str", key: "athletics" },
-		{ name: "Deception", stat: "cha", key: "deception" },
-		{ name: "History", stat: "int", key: "history" },
-		{ name: "Insight", stat: "wis", key: "insight" },
-		{ name: "Intimidation", stat: "cha", key: "intimidation" },
-		{ name: "Investigation", stat: "int", key: "investigation" },
-		{ name: "Medicine", stat: "wis", key: "medicine" },
-		{ name: "Nature", stat: "int", key: "nature" },
-		{ name: "Perception", stat: "wis", key: "perception" },
-		{ name: "Performance", stat: "cha", key: "performance" },
-		{ name: "Persuasion", stat: "cha", key: "persuasion" },
-		{ name: "Religion", stat: "int", key: "religion" },
-		{ name: "Sleight of Hand", stat: "dex", key: "sleight-of-hand" },
-		{ name: "Stealth", stat: "dex", key: "stealth" },
-		{ name: "Survival", stat: "wis", key: "survival" },
-	];
-
-	const allMods = getAllModifiers(char);
-
+function buildSkillsSection(skills: SkillResult[]): string {
 	let md = `## Skills\n\n`;
 	md += `| Skill | Stat | Bonus |\n`;
 	md += `|:---|:---:|:---:|\n`;
 
-	for (const skill of skillDefs) {
-		const statVal = stats[skill.stat] ?? 10;
-		const base = Math.floor((statVal - 10) / 2);
-		const expertise = allMods.some(
-			(m) => m.type === "expertise" && m.subType === skill.key
-		);
-		const prof = allMods.some(
-			(m) => m.type === "proficiency" && m.subType === skill.key
-		);
-		let bonus = base;
-		if (expertise) bonus += pb * 2;
-		else if (prof) bonus += pb;
-
-		const bonusStr = bonus >= 0 ? `+${bonus}` : `${bonus}`;
-		const marker = expertise ? " ★" : prof ? " ✓" : "";
-		const advState = getAdvantageState(allMods, skill.key, "ability-checks");
-		const advMarker = formatAdvMarkerMd(advState);
+	for (const skill of skills) {
+		const bonusStr = signed(skill.bonus);
+		const marker = skill.expertise ? " ★" : skill.prof ? " ✓" : "";
+		const advMarker = formatAdvMarkerMd(skill.adv);
 		md += `| ${skill.name}${marker} | ${skill.stat.toUpperCase()} | ${bonusStr}${advMarker} |\n`;
 	}
 
-	md += "\n*✓ = Proficient, ★ = Expertise, ▲A = Advantage, –N = None, ▼D = Disadvantage*\n\n";
+	md += "\n*✓ = Proficient, ★ = Expertise, ▲A = Advantage, –N = None, ▼D = Disadvantage. Non-proficient skills include Jack of All Trades when the character has it.*\n\n";
 	return md;
 }
 
 function buildProficiencies(char: DdbCharacter): string {
-	const allMods = getAllModifiers(char);
-
-	const collect = (filterFn: (m: DdbModifier) => boolean): string[] =>
-		[
-			...new Set(
-				allMods
-					.filter(filterFn)
-					.map((m) => m.friendlySubtypeName ?? m.subType)
-					.filter(Boolean)
-			),
-		] as string[];
-
-	const languages = collect((m) => m.type === "language");
-	const armors = collect(
-		(m) => m.type === "proficiency" && (m.subType ?? "").includes("armor")
-	);
-	const weapons = collect(
-		(m) => m.type === "proficiency" && (m.subType ?? "").includes("weapon")
-	);
-	const tools = collect(
-		(m) => m.type === "proficiency" && (m.subType ?? "").includes("tool")
-	);
+	const { languages, armor, weapons, tools } = collectProficiencies(char);
 
 	let md = `## Proficiencies & Languages\n\n`;
 	if (languages.length) md += `**Languages:** ${languages.join(", ")}\n\n`;
-	if (armors.length) md += `**Armor:** ${armors.join(", ")}\n\n`;
+	if (armor.length) md += `**Armor:** ${armor.join(", ")}\n\n`;
 	if (weapons.length) md += `**Weapons:** ${weapons.join(", ")}\n\n`;
 	if (tools.length) md += `**Tools:** ${tools.join(", ")}\n\n`;
 
 	return md;
 }
 
-function buildEquipment(inventory: DdbInventoryItem[]): string {
+function buildEquipment(inventory: DdbInventoryItem[], customItems: DdbCustomItem[]): string {
 	let md = `## Equipment\n\n`;
 	md += `| Item | Qty | Equipped | Weight |\n`;
 	md += `|:---|:---:|:---:|:---:|\n`;
@@ -788,9 +1099,15 @@ function buildEquipment(inventory: DdbInventoryItem[]): string {
 		const name = def.name ?? "Unknown Item";
 		const qty = item.quantity ?? 1;
 		const equipped = item.equipped ? "✓" : "—";
-		const weight =
-			def.weight != null ? `${(def.weight * qty).toFixed(1)} lbs` : "—";
+		const w = itemWeight(def, qty);
+		const weight = w != null ? `${w.toFixed(1)} lbs` : "—";
 		md += `| ${name} | ${qty} | ${equipped} | ${weight} |\n`;
+	}
+
+	for (const item of customItems) {
+		const qty = item.quantity ?? 1;
+		const weight = item.weight != null ? `${(item.weight * qty).toFixed(1)} lbs` : "—";
+		md += `| ${item.name ?? "Custom Item"} | ${qty} | — | ${weight} |\n`;
 	}
 
 	md += "\n";
@@ -817,6 +1134,19 @@ function buildActionsSection(actions: CharacterAction[]): string {
 
 function buildFeatures(char: DdbCharacter): string {
 	let md = `## Features & Traits\n\n`;
+
+	const classFeatureGroups = getClassFeatureList(char);
+	if (classFeatureGroups.length) {
+		md += `### Class Features\n\n`;
+		for (const group of classFeatureGroups) {
+			md += `#### ${group.className} (Level ${group.level})\n\n`;
+			for (const feature of group.features) {
+				md += `**${feature.name}**\n`;
+				if (feature.description) md += `${stripHtml(feature.description)}\n`;
+				md += "\n";
+			}
+		}
+	}
 
 	const raceTraits: DdbRacialTrait[] = char.race?.racialTraits ?? [];
 	if (raceTraits.length) {
@@ -855,7 +1185,7 @@ function buildFeatures(char: DdbCharacter): string {
 	return md;
 }
 
-function buildSpells(char: DdbCharacter): string {
+function buildSpells(char: DdbCharacter, spellcasting: Spellcasting | null, slots: Array<{ level: number; max: number; used: number }>): string {
 	const allSpells: DdbSpell[] = [];
 
 	if (Array.isArray(char.classSpells)) {
@@ -868,15 +1198,19 @@ function buildSpells(char: DdbCharacter): string {
 		for (const spell of char.spells?.[src] ?? []) allSpells.push(spell);
 	}
 
-	if (!allSpells.length) return "";
+	if (!allSpells.length && !slots.length) return "";
 
 	let md = `## Spells\n\n`;
+
+	if (spellcasting) {
+		md += `**Spellcasting ability:** ${spellcasting.abilityKey.toUpperCase()} (${signed(spellcasting.mod)}) • **Spell save DC:** ${spellcasting.dc} • **Spell attack:** ${signed(spellcasting.attack)}\n\n`;
+	}
 
 	const byLevel: Map<number, DdbSpell[]> = new Map();
 	for (const spell of allSpells) {
 		const lvl = spell.definition?.level ?? 0;
 		if (!byLevel.has(lvl)) byLevel.set(lvl, []);
-		byLevel.get(lvl)!.push(spell);
+		byLevel.get(lvl)?.push(spell);
 	}
 
 	const levelNames = [
@@ -908,22 +1242,15 @@ function buildSpells(char: DdbCharacter): string {
 		md += "\n";
 	}
 
-	// Spell slots
-	const spellSlots = char.spellSlots;
-	if (spellSlots) {
-		const slots: DdbSpellSlot[] = Array.isArray(spellSlots)
-			? spellSlots
-			: Object.values<DdbSpellSlot>(spellSlots);
-		const usefulSlots = slots.filter((s) => s.max);
-		if (usefulSlots.length) {
-			md += `### Spell Slots\n\n`;
-			md += `| Level | Used | Max |\n`;
-			md += `|:---:|:---:|:---:|\n`;
-			for (const slot of usefulSlots) {
-				md += `| ${slot.level ?? "?"} | ${slot.used ?? 0} | ${slot.max ?? 0} |\n`;
-			}
-			md += "\n";
+	// Spell slots (maximum from the class table, minus slots already used)
+	if (slots.length) {
+		md += `### Spell Slots\n\n`;
+		md += `| Level | Max | Used | Remaining |\n`;
+		md += `|:---:|:---:|:---:|:---:|\n`;
+		for (const slot of slots) {
+			md += `| ${slot.level} | ${slot.max} | ${slot.used} | ${Math.max(0, slot.max - slot.used)} |\n`;
 		}
+		md += "\n";
 	}
 
 	return md;
@@ -946,43 +1273,72 @@ function buildBackstory(char: DdbCharacter): string {
 
 // ─── Actions extractor ───────────────────────────────────────────────────────
 
+// Damage dice of a spell (first "damage" modifier). Damage cantrips that scale by
+// character level gain dice at levels 5, 11 and 17.
+function spellDamage(def: DdbDefinition, charLevel: number): { dice: string | null; type: string } {
+	const mod = (def.modifiers ?? []).find((m) => m.type === "damage" && m.die?.diceString);
+	const base = mod?.die?.diceString;
+	if (!mod || !base) return { dice: null, type: "" };
+	let dice = base;
+	const hasBeams = (def.atHigherLevels?.additionalAttacks?.length ?? 0) > 0;
+	if ((def.level ?? 0) === 0 && def.scaleType === "characterlevel" && !hasBeams) {
+		const mult = 1 + (charLevel >= 5 ? 1 : 0) + (charLevel >= 11 ? 1 : 0) + (charLevel >= 17 ? 1 : 0);
+		const m = base.match(/^(\d+)d(\d+)$/);
+		if (m) dice = `${parseInt(m[1], 10) * mult}d${m[2]}`;
+	}
+	return { dice, type: mod.subType ?? "" };
+}
+
 function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: number): CharacterAction[] {
 	const actions: CharacterAction[] = [];
-	const strMod = Math.floor((stats.str - 10) / 2);
-	const dexMod = Math.floor((stats.dex - 10) / 2);
+	const allMods = getAllModifiers(char);
+	const strMod = abilityMod(stats.str);
+	const dexMod = abilityMod(stats.dex);
+	const charLevel = calcLevel(char.classes ?? []);
+	const modBonus = (subType: string): number =>
+		allMods
+			.filter((m) => m.type === "bonus" && m.subType === subType)
+			.reduce((sum, m) => sum + (m.value ?? m.fixedValue ?? 0), 0);
 
 	for (const item of char.inventory ?? []) {
-		const def = item.definition as (DdbDefinition & {
-			weaponBehaviors?: Array<{attackType?: number; damage?: {diceString?: string; fixedValue?: number}; properties?: Array<{name?: string}>}>;
-			isMonkWeapon?: boolean;
-			weaponTypeRange?: number;
-			categoryId?: number;
-			damage?: { diceString?: string; fixedValue?: number };
-			properties?: Array<{ name?: string }>;
-		});
+		const def = item.definition;
 		if (!def || !item.equipped) continue;
 
-		// Accept categoryId 1 (standard weapons) or items that have weaponBehaviors (custom/magic weapons)
+		// Any weapon: filterType Weapon, an attack type, or custom/magic weapons with weaponBehaviors.
 		const hasWeaponBehaviors = Array.isArray(def.weaponBehaviors) && def.weaponBehaviors.length > 0;
-		if (def.categoryId !== 1 && !hasWeaponBehaviors) continue;
+		if (def.filterType !== "Weapon" && def.attackType == null && !hasWeaponBehaviors) continue;
 
-		const isFinesse = def.properties?.some((p) => p.name === "Finesse") ?? false;
-		const isRanged = def.weaponTypeRange === 2;
+		const propNames = (def.properties ?? []).map((p) => p.name ?? "").filter(Boolean);
+		const isFinesse = propNames.includes("Finesse");
+		const isThrown = propNames.includes("Thrown");
+		const isRanged = def.attackType === 2;
 		const atkMod = isRanged ? dexMod : (isFinesse ? Math.max(strMod, dexMod) : strMod);
-		const attackBonus = atkMod + pb;
+
+		// Magic weapons (+1, +2, ...) add to both attack and damage.
+		const magic = (def.grantedModifiers ?? [])
+			.filter((m) => m.type === "bonus" && m.subType === "magic")
+			.reduce((sum, m) => sum + (m.value ?? m.fixedValue ?? 0), 0);
+		const styleBonus = modBonus(isRanged ? "ranged-weapon-attacks" : "melee-weapon-attacks");
+
+		const proficient = isWeaponProficient(def, allMods);
+		const attackBonus = atkMod + (proficient ? pb : 0) + magic + styleBonus;
 
 		// Only use damage dice if explicitly defined on the item — homebrew items with no
 		// damage field (e.g. utility weapons) are ATK-only and show no DMG roll.
 		const dmgDice: string | null = def.damage?.diceString ?? null;
 		const fixedVal: number | null = def.damage?.fixedValue ?? null;
-		const dmgBonus = dmgDice != null || fixedVal != null ? atkMod + (fixedVal ?? 0) : 0;
+		const dmgBonus = dmgDice != null || fixedVal != null ? atkMod + (fixedVal ?? 0) + magic : 0;
 
-		// Build range string — prefer explicit rangeValue, then properties, then defaults
-		const rangeVal = def.range?.rangeValue;
-		const propNames = (def.properties ?? []).map((p) => p.name ?? "").filter(Boolean);
-		const rangeStr = rangeVal
-			? `${rangeVal} ft`
-			: (isRanged ? "Ranged" : "5 ft");
+		let rangeStr: string;
+		if (def.range) {
+			rangeStr = def.longRange ? `${def.range}/${def.longRange} ft` : `${def.range} ft`;
+			if (!isRanged && isThrown) rangeStr = `5 ft (thrown ${rangeStr})`;
+		} else {
+			rangeStr = isRanged ? "Ranged" : (propNames.includes("Reach") ? "10 ft" : "5 ft");
+		}
+
+		const notes = [...(def.damageType ? [def.damageType] : []), ...propNames.filter((p) => p !== "Range")];
+		if (!proficient) notes.push("Not proficient");
 
 		actions.push({
 			name: def.name ?? "Unknown Weapon",
@@ -990,9 +1346,34 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 			damageDice: dmgDice,
 			damageBonus: dmgBonus,
 			range: rangeStr,
-			notes: propNames.join(", "),
+			notes: notes.join(", "),
 			isSpell: false,
 		});
+	}
+
+	// Attack actions granted by race / class / feats (e.g. Tortle Claws)
+	const seenActions = new Set<string>();
+	const actionGroups: Array<DdbAction[] | null | undefined> = [
+		char.actions?.race, char.actions?.class, char.actions?.feat, char.actions?.background, char.actions?.item,
+	];
+	for (const group of actionGroups) {
+		for (const a of group ?? []) {
+			if (!a.name || seenActions.has(a.name)) continue;
+			if (a.abilityModifierStatId == null || a.attackSubtype == null || !a.dice?.diceString) continue;
+			const key = ABILITY_KEYS[a.abilityModifierStatId - 1];
+			if (!key) continue;
+			seenActions.add(a.name);
+			const aMod = abilityMod(stats[key]);
+			actions.push({
+				name: a.name,
+				attackBonus: aMod + (a.isProficient ? pb : 0),
+				damageDice: a.dice.diceString,
+				damageBonus: aMod,
+				range: a.attackTypeRange === 2 ? "Ranged" : "5 ft",
+				notes: a.damageTypeId != null ? (DAMAGE_TYPES[a.damageTypeId] ?? "") : "",
+				isSpell: false,
+			});
+		}
 	}
 
 	// Unarmed strike always present
@@ -1007,25 +1388,39 @@ function extractActions(char: DdbCharacter, stats: Record<string, number>, pb: n
 		isSpell: false,
 	});
 
-	// Cantrip attack spells
+	// Attack / damage / save cantrips, using the spellcasting ability (CHA for bards, etc.)
+	const spellcasting = computeSpellcasting(char, stats, pb);
 	const allSpells: DdbSpell[] = [];
 	if (Array.isArray(char.classSpells)) {
 		for (const cs of char.classSpells) for (const sp of cs.spells ?? []) allSpells.push(sp);
 	}
-	const spellAttackBonus = Math.floor((stats.int - 10) / 2) + pb;
+	for (const src of ["race", "background", "feat", "class", "item"]) {
+		for (const sp of char.spells?.[src] ?? []) allSpells.push(sp);
+	}
+	const seenCantrips = new Set<string>();
 	for (const spell of allSpells) {
 		const def = spell.definition;
-		if (!def || (def.level ?? 0) !== 0) continue;
-		const actType = def.activation?.activationType;
-		if (actType !== 1 && actType !== 3) continue; // action or bonus action only
+		if (!def || (def.level ?? 0) !== 0 || !def.name || seenCantrips.has(def.name)) continue;
+		const dmg = spellDamage(def, charLevel);
+		const attacks = def.requiresAttackRoll === true;
+		const saves = def.requiresSavingThrow === true;
+		if (!attacks && !saves && !dmg.dice) continue;
+		seenCantrips.add(def.name);
 		const rangeVal = def.range?.rangeValue;
+		const noteParts: string[] = [];
+		if (saves && spellcasting) {
+			const saveKey = def.saveDcAbilityId != null ? ABILITY_KEYS[def.saveDcAbilityId - 1] : undefined;
+			noteParts.push(`DC ${spellcasting.dc}${saveKey ? ` ${saveKey.toUpperCase()}` : ""} save`);
+		}
+		if (dmg.type) noteParts.push(dmg.type.charAt(0).toUpperCase() + dmg.type.slice(1));
+		if (def.school) noteParts.push(def.school);
 		actions.push({
-			name: def.name ?? "Cantrip",
-			attackBonus: spellAttackBonus,
-			damageDice: null,
+			name: def.name,
+			attackBonus: attacks && spellcasting ? spellcasting.attack : null,
+			damageDice: dmg.dice,
 			damageBonus: 0,
 			range: rangeVal ? `${rangeVal} ft` : (def.range?.origin ?? "—"),
-			notes: def.school ?? "",
+			notes: noteParts.join(", "),
 			isSpell: true,
 		});
 	}
@@ -1977,47 +2372,22 @@ class FullCharacterSheetModal extends Modal {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// SKILLS
+		// SKILLS (includes Jack of All Trades)
 		// ════════════════════════════════════════════════════════════════════
 		const skillSection = this.sectionEl(mainCol, "Skills");
 		const skillGrid = skillSection.createDiv();
 		skillGrid.addClass("dndbi-cs-skill-grid");
 
-		const skillDefs: Array<{ label: string; key: keyof typeof stats; subType: string }> = [
-			{ label: "Acrobatics",     key: "dex", subType: "acrobatics" },
-			{ label: "Animal Handling",key: "wis", subType: "animal-handling" },
-			{ label: "Arcana",         key: "int", subType: "arcana" },
-			{ label: "Athletics",      key: "str", subType: "athletics" },
-			{ label: "Deception",      key: "cha", subType: "deception" },
-			{ label: "History",        key: "int", subType: "history" },
-			{ label: "Insight",        key: "wis", subType: "insight" },
-			{ label: "Intimidation",   key: "cha", subType: "intimidation" },
-			{ label: "Investigation",  key: "int", subType: "investigation" },
-			{ label: "Medicine",       key: "wis", subType: "medicine" },
-			{ label: "Nature",         key: "int", subType: "nature" },
-			{ label: "Perception",     key: "wis", subType: "perception" },
-			{ label: "Performance",    key: "cha", subType: "performance" },
-			{ label: "Persuasion",     key: "cha", subType: "persuasion" },
-			{ label: "Religion",       key: "int", subType: "religion" },
-			{ label: "Sleight of Hand",key: "dex", subType: "sleight-of-hand" },
-			{ label: "Stealth",        key: "dex", subType: "stealth" },
-			{ label: "Survival",       key: "wis", subType: "survival" },
-		];
-
-		for (const { label, key, subType } of skillDefs) {
-			const isProficient = allMods.some((m) => m.type === "proficiency" && m.subType === subType);
-			const isExpertise  = allMods.some((m) => m.type === "expertise"   && m.subType === subType);
-			const bonus = this.mod(stats[key]) + (isExpertise ? pb * 2 : isProficient ? pb : 0);
+		for (const skill of computeSkills(char, stats, pb)) {
 			const row = skillGrid.createDiv();
 			row.addClass("dndbi-cs-skill-row");
 			const left = row.createDiv(); left.addClass("dndbi-cs-save-left");
 			const dot = left.createSpan();
-			dot.setText(isExpertise ? "★" : isProficient ? "●" : "○");
-			dot.addClass(isExpertise ? "dndbi-cs-dot--expert" : isProficient ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
-			const _lbl = left.createSpan(); _lbl.setText(label); _lbl.addClass("dndbi-cs-skill-lbl");
-			const advState = getAdvantageState(allMods, subType, "ability-checks");
-			this.advBadge(left, advState);
-			this.rollBtn(row, `${label} Check`, bonus);
+			dot.setText(skill.expertise ? "★" : skill.prof ? "●" : skill.half ? "◐" : "○");
+			dot.addClass(skill.expertise ? "dndbi-cs-dot--expert" : skill.prof || skill.half ? "dndbi-cs-dot--prof" : "dndbi-cs-dot--none");
+			const _lbl = left.createSpan(); _lbl.setText(skill.name); _lbl.addClass("dndbi-cs-skill-lbl");
+			this.advBadge(left, skill.adv);
+			this.rollBtn(row, `${skill.name} Check`, skill.bonus);
 		}
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2074,56 +2444,59 @@ class FullCharacterSheetModal extends Modal {
 		// ════════════════════════════════════════════════════════════════════
 		// SPELL SLOTS + SPELLS
 		// ════════════════════════════════════════════════════════════════════
-		const spellSlots = char.spellSlots;
-		if (spellSlots) {
-			const slots: DdbSpellSlot[] = Array.isArray(spellSlots) ? spellSlots : Object.values<DdbSpellSlot>(spellSlots);
-			const usefulSlots = slots.filter((s) => s.max);
-			if (usefulSlots.length) {
-				const slotSection = this.sectionEl(mainCol, "Spell Slots");
-				const slotKey = `dnd-slots-${char.id}`;
-				const loadSlots = (): Record<number, number> => {
-					try {
-						const raw = this.plugin.pluginState.get(slotKey) ?? "null";
-						const parsed: unknown = JSON.parse(raw);
-						if (parsed !== null && typeof parsed === "object") {
-							return parsed as Record<number, number>;
-						}
-						return {};
-					} catch { return {}; }
+		const usefulSlots = getSpellSlots(char);
+		if (usefulSlots.length) {
+			const slotSection = this.sectionEl(mainCol, "Spell Slots");
+			const slotKey = `dnd-slots-${char.id}`;
+			// First open after an import: start from the used slots D&D Beyond reports.
+			const seedSlots = (): Record<number, number> => {
+				const seed: Record<number, number> = {};
+				for (const s of usefulSlots) seed[s.level] = s.used;
+				return seed;
+			};
+			const loadSlots = (): Record<number, number> => {
+				try {
+					const raw = this.plugin.pluginState.get(slotKey);
+					if (raw === undefined) return seedSlots();
+					const parsed: unknown = JSON.parse(raw);
+					if (parsed !== null && typeof parsed === "object") {
+						return parsed as Record<number, number>;
+					}
+					return seedSlots();
+				} catch { return seedSlots(); }
+			};
+			const saveSlots = (d: Record<number, number>) => this.plugin.pluginState.set(slotKey, JSON.stringify(d));
+			const usedSlots: Record<number, number> = loadSlots();
+
+			for (const slot of usefulSlots) {
+				const lvl = slot.level;
+				const maxPips = slot.max;
+				const slotRow = slotSection.createDiv();
+				slotRow.addClass("dndbi-cs-slot-row");
+				const lvlLbl = slotRow.createSpan(); lvlLbl.setText(`Level ${lvl}`);
+				lvlLbl.addClass("dndbi-cs-slot-lbl");
+				const pipsEl = slotRow.createDiv(); pipsEl.addClass("dndbi-cs-slot-pips");
+				const restBtn = slotRow.createEl("button"); restBtn.setText("Rest");
+				restBtn.addClass("dndbi-cs-slot-rest-btn");
+
+				const renderPips = () => {
+					pipsEl.empty();
+					const used = usedSlots[lvl] ?? 0;
+					for (let i = 0; i < maxPips; i++) {
+						const pip = pipsEl.createEl("button");
+						const isUsed = i < used;
+						pip.addClass("dndbi-cs-spell-pip");
+						if (isUsed) { pip.addClass("dndbi-cs-spell-pip--used"); } else { pip.removeClass("dndbi-cs-spell-pip--used"); }
+						pip.addEventListener("click", () => {
+							const cur = usedSlots[lvl] ?? 0;
+							usedSlots[lvl] = isUsed ? Math.max(0, cur - 1) : Math.min(maxPips, cur + 1);
+							saveSlots(usedSlots); renderPips();
+						});
+					}
 				};
-				const saveSlots = (d: Record<number, number>) => this.plugin.pluginState.set(slotKey, JSON.stringify(d));
-				const usedSlots: Record<number, number> = loadSlots();
 
-				for (const slot of usefulSlots) {
-					const lvl = slot.level ?? 0;
-					const maxPips = slot.max ?? 0;
-					const slotRow = slotSection.createDiv();
-					slotRow.addClass("dndbi-cs-slot-row");
-					const lvlLbl = slotRow.createSpan(); lvlLbl.setText(`Level ${lvl}`);
-					lvlLbl.addClass("dndbi-cs-slot-lbl");
-					const pipsEl = slotRow.createDiv(); pipsEl.addClass("dndbi-cs-slot-pips");
-					const restBtn = slotRow.createEl("button"); restBtn.setText("Rest");
-					restBtn.addClass("dndbi-cs-slot-rest-btn");
-
-					const renderPips = () => {
-						pipsEl.empty();
-						const used = usedSlots[lvl] ?? 0;
-						for (let i = 0; i < maxPips; i++) {
-							const pip = pipsEl.createEl("button");
-							const isUsed = i < used;
-							pip.addClass("dndbi-cs-spell-pip");
-							if (isUsed) { pip.addClass("dndbi-cs-spell-pip--used"); } else { pip.removeClass("dndbi-cs-spell-pip--used"); }
-							pip.addEventListener("click", () => {
-								const cur = usedSlots[lvl] ?? 0;
-								usedSlots[lvl] = isUsed ? Math.max(0, cur - 1) : Math.min(maxPips, cur + 1);
-								saveSlots(usedSlots); renderPips();
-							});
-						}
-					};
-
-					restBtn.addEventListener("click", () => { usedSlots[lvl] = 0; saveSlots(usedSlots); renderPips(); });
-					renderPips();
-				}
+				restBtn.addEventListener("click", () => { usedSlots[lvl] = 0; saveSlots(usedSlots); renderPips(); });
+				renderPips();
 			}
 		}
 
@@ -2142,7 +2515,7 @@ class FullCharacterSheetModal extends Modal {
 			for (const s of allSpells) {
 				const lvl = s.definition?.level ?? 0;
 				if (!byLevel.has(lvl)) byLevel.set(lvl, []);
-				byLevel.get(lvl)!.push(s);
+				byLevel.get(lvl)?.push(s);
 			}
 			const levelNames = ["Cantrips","1st","2nd","3rd","4th","5th","6th","7th","8th","9th"];
 
@@ -2199,7 +2572,8 @@ class FullCharacterSheetModal extends Modal {
 		// EQUIPMENT
 		// ════════════════════════════════════════════════════════════════════
 		const inventory = char.inventory ?? [];
-		if (inventory.length) {
+		const customItems = char.customItems ?? [];
+		if (inventory.length || customItems.length) {
 			const eqSection = this.sectionEl(mainCol, "Equipment");
 			const eqKey = `dnd-eq-${char.id}`;
 			const loadEq = (): Record<string, boolean> => {
@@ -2236,8 +2610,9 @@ class FullCharacterSheetModal extends Modal {
 				itemName.addClass("dndbi-cs-eq-name");
 				const qty = iRow.createSpan(); qty.setText(`×${item.quantity ?? 1}`);
 				qty.addClass("dndbi-cs-eq-qty");
-				if (def.weight) {
-					const wt = iRow.createSpan(); wt.setText(`${def.weight} lb`);
+				const totalWeight = itemWeight(def, item.quantity ?? 1);
+				if (totalWeight) {
+					const wt = iRow.createSpan(); wt.setText(`${Number(totalWeight.toFixed(2))} lb`);
 					wt.addClass("dndbi-cs-eq-wt");
 				}
 
@@ -2254,6 +2629,21 @@ class FullCharacterSheetModal extends Modal {
 							new FiveEDataModal(this.app, def.name ?? "Item", render5eDescription(entry)).open();
 						})();
 					});
+				}
+			}
+
+			// Custom items (e.g. a Crystal Orb or gems added by hand on D&D Beyond)
+			for (const item of customItems) {
+				const iRow = eqSection.createDiv();
+				iRow.addClass("dndbi-cs-eq-row");
+				const icon = iRow.createSpan(); icon.setText("🎒");
+				const itemName = iRow.createSpan(); itemName.setText(item.name ?? "Custom Item");
+				itemName.addClass("dndbi-cs-eq-name");
+				const qty = iRow.createSpan(); qty.setText(`×${item.quantity ?? 1}`);
+				qty.addClass("dndbi-cs-eq-qty");
+				if (item.weight) {
+					const wt = iRow.createSpan(); wt.setText(`${Number((item.weight * (item.quantity ?? 1)).toFixed(2))} lb`);
+					wt.addClass("dndbi-cs-eq-wt");
 				}
 			}
 		}
@@ -2327,13 +2717,38 @@ class FullCharacterSheetModal extends Modal {
 		}
 
 		// ════════════════════════════════════════════════════════════════════
-		// CLASS FEATURES (expandable, with 5etools lookup)
+		// CLASS FEATURES (expandable; only features at or below the class level)
 		// ════════════════════════════════════════════════════════════════════
 		const classFeatureSection = this.sectionEl(mainCol, "Class Features");
-		for (const cls of char.classes ?? []) {
-			const className = cls.definition?.name ?? "Unknown";
-			const clsHdr = classFeatureSection.createDiv(); clsHdr.setText(`${className} (Level ${cls.level ?? 0})`);
-			clsHdr.addClass("dndbi-cs-cls-hdr");
+		const featureGroups = getClassFeatureList(char);
+		if (featureGroups.length) {
+			for (const group of featureGroups) {
+				const clsHdr = classFeatureSection.createDiv(); clsHdr.setText(`${group.className} (Level ${group.level})`);
+				clsHdr.addClass("dndbi-cs-cls-hdr");
+				for (const feature of group.features) {
+					const card = classFeatureSection.createDiv();
+					card.addClass("dndbi-cs-feat-card");
+					const hdr = card.createDiv();
+					hdr.addClass("dndbi-cs-feat-hdr");
+					const hdrSpan = hdr.createSpan(); hdrSpan.setText(feature.name); hdrSpan.addClass("dndbi-cs-feat-hdr-name");
+					const chevron = hdr.createSpan(); chevron.setText("▶"); chevron.addClass("dndbi-cs-feat-chevron");
+					const body = card.createDiv();
+					body.addClass("dndbi-cs-feat-body");
+					body.setText(stripHtml(feature.description) || "No description available.");
+					let open = false;
+					hdr.addEventListener("click", () => {
+						open = !open;
+						if (open) { body.addClass("dndbi-cs-feat-body--open"); chevron.addClass("dndbi-cs-feat-chevron--open"); }
+						else { body.removeClass("dndbi-cs-feat-body--open"); chevron.removeClass("dndbi-cs-feat-chevron--open"); }
+					});
+				}
+			}
+		} else {
+			for (const cls of char.classes ?? []) {
+				const className = cls.definition?.name ?? "Unknown";
+				const clsHdr = classFeatureSection.createDiv(); clsHdr.setText(`${className} (Level ${cls.level ?? 0})`);
+				clsHdr.addClass("dndbi-cs-cls-hdr");
+			}
 		}
 
 		// ════════════════════════════════════════════════════════════════════
@@ -2380,10 +2795,8 @@ class FullCharacterSheetModal extends Modal {
 
 		// Proficiencies & Languages
 		const profSection = this.sectionEl(sideCol, "Proficiencies & Languages");
-		const profNames = allMods
-			.filter((m) => m.type === "proficiency" && m.friendlySubtypeName)
-			.map((m) => m.friendlySubtypeName ?? "")
-			.filter((v, i, a) => v && a.indexOf(v) === i);
+		const profLists = collectProficiencies(char);
+		const profNames = [...profLists.languages, ...profLists.armor, ...profLists.weapons, ...profLists.tools];
 		if (profNames.length) {
 			const profList = profSection.createDiv(); profList.addClass("dndbi-cs-prof-list");
 			profNames.forEach((p) => {
@@ -2495,7 +2908,7 @@ class DnDBeyondSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Include features & traits",
-				desc: "Import racial traits, feats and character personality traits.",
+				desc: "Import class features, racial traits, feats and character personality traits.",
 				render: (setting: Setting) => {
 					setting.addToggle((toggle) =>
 						toggle.setValue(this.plugin.pluginSettings.includeFeatures).onChange((value) => {
@@ -2627,6 +3040,11 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 				const storedAc = fm["ac"] != null ? Number(fm["ac"]) : undefined;
 				const storedInit = fm["initiative"] != null ? Number(fm["initiative"])
 					: fm["modifier"] != null ? Number(fm["modifier"]) : undefined;
+				// Spell slots are stored in the note as max/used arrays (index 0 = level 1).
+				const toNumArr = (v: unknown): number[] => Array.isArray(v) ? v.map((x: unknown) => Number(x)) : [];
+				const slotsMax = toNumArr(fm["spell_slots_max"]);
+				const slotsUsed = toNumArr(fm["spell_slots_used"]);
+				const restoredSlots: DdbSpellSlot[] = slotsMax.map((max, i) => ({ level: i + 1, max, used: slotsUsed[i] ?? 0 }));
 				// Reconstruct a minimal DdbCharacter that satisfies FullCharacterSheetModal.
 				// We only populate the fields the sheet actually reads; everything else
 				// stays undefined (the sheet guards all optional accesses).
@@ -2671,6 +3089,7 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 					inventory: [],
 					feats: [],
 					classSpells: [],
+					spellSlots: restoredSlots,
 				};
 				this.charCache.set(id, { char, stats, pb, ac: storedAc, initiative: storedInit });
 			}
@@ -2956,8 +3375,9 @@ export default class DnDBeyondImporterPlugin extends Plugin {
 
 		let data: DdbApiResponse;
 		try {
+			// includeCustomItems=true adds hand-written inventory entries (customItems).
 			const resp = await requestUrl({
-				url: `https://character-service.dndbeyond.com/character/v5/character/${id}`,
+				url: `https://character-service.dndbeyond.com/character/v5/character/${id}?includeCustomItems=true`,
 				headers: { Accept: "application/json" },
 			});
 			data = resp.json as DdbApiResponse;
