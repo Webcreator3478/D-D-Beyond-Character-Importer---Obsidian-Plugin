@@ -1,5 +1,30 @@
 # Release Notes
 
+## v1.1.6
+
+### Fixes
+- **Custom items:** The importer now requests `includeCustomItems=true`, so hand-written inventory entries (for example a Crystal Orb or a Diamond) appear in the Equipment table and in the Interactive Sheet.
+- **Bundle weights:** Stackable items such as crossbow bolts use the bundle size, so 20 bolts weigh what D&D Beyond shows instead of 20 times the bundle weight.
+- **Jack of All Trades on skills:** Non-proficient skills now include half the proficiency bonus, in the note and in the Interactive Sheet.
+- **Spell attacks and save DC:** The spellcasting ability now comes from the class (CHA for a Bard instead of INT). The Spells section shows the ability, spell save DC and spell attack bonus.
+- **Weapons:** Martial weapons such as the Hand Crossbow are no longer skipped. Proficiency is checked per weapon category and per individual weapon, magic bonuses (+1 and so on) are applied, and weapon ranges are read correctly.
+- **Racial attacks:** Attacks granted by race, class or feats (for example Tortle Claws) are listed with the right ability and damage type.
+- **Cantrips:** Damage, attack and saving-throw cantrips show their damage dice (scaled by character level), attack bonus or save DC. Utility cantrips are no longer listed as attacks.
+
+### New
+- **Passive scores:** Passive Perception, Investigation and Insight in the note and in the frontmatter.
+- **Spell slots:** Slots come from the class spell table (multiclass aware), minus the slots already used. They are shown in the note, saved in the frontmatter and used by the Interactive Sheet after a restart.
+- **Class features:** Class and subclass features at or below the character's level are listed in the note and in the Interactive Sheet.
+- **Proficiencies:** Individual weapons (Scimitar), instruments and tools (Lyre, Drum, Fiddle) are now listed.
+- **Cleaner descriptions:** D&D Beyond tags such as `[rules]` and `[condition]` are removed from descriptions.
+
+### Notes
+- Existing character notes need one **Refresh from D&D Beyond** to gain the new frontmatter fields (passive scores, spell ability, spell save DC, spell attack, spell slots).
+- After an Obsidian restart the Interactive Sheet is rebuilt from the note, so it still has no inventory, modifiers or spell list until the next refresh. Weapons, skills and cantrips on the sheet are only complete after a refresh in the current session.
+- Initiative keeps the 1.1.5 behaviour, which matches D&D Beyond.
+
+---
+
 ## v1.1.5
 
 ### Bug Fixes
